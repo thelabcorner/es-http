@@ -50,26 +50,59 @@ eshttp/
     architecture.md     <- this file
     api-spec.md         <- PUBLIC API contract (contracts/http-api-v1)
     native-abi.md       <- eshttp.dll ABI contract (contracts/native-abi-v2)
-    cli-transport.md    <- eshttp-cli.exe job-file IPC contract (cli-transport-v1)
+    cli-transport.md    <- cli transport contract (pipe + job-file lanes, cli-transport-v1)
   src/
     *.ts                <- TypeScript modules (18 files): drivers native/cli/socket,
                            adapters (vendor-json/vendor-b64), core, index (facade)
   native/
     eshttp.c            <- DLL + CLI shared engine (v2 direct-interface)
     eshttp.h            <- ABI header mirroring docs/native-abi.md
-    eshttp-cli.c        <- separate-process transport (job-file IPC)
+    eshttp-cli.c        <- separate-process transport (worker + job-file)
+    eshttp-ipc.h/.c     <- named-pipe protocol + bridge DLL
     BUILD.md            <- MSVC build + install instructions
   test/
     harness.js          <- headless ES3 test runner (qa)
     load-core.mjs       <- shared 3-source loader (esm/iife/jsxinc) + stubs
     mock-server.js      <- local cleartext test server (Node `http`)
     tcp-client.js       <- raw-TCP test helper (socket path)
-    tests/*.js          <- ES3 test suite files (incl. 35-cli-transport)
+    tests/*.js          <- ES3 test suite files (incl. 35-cli-transport, 36-pipe)
   README.md
-  LICENSE               <- MIT
+  LICENSE               <- GPL-3.0-or-later
 ```
 
 `eshttp/` lives at the repository root next to the swarm tooling:
+
+### 3.1 Accel composition model (v1.1.0, espack merge spec)
+
+The per-bitness accel bundles (`dist/eshttp.accel-x64.jsx` /
+`eshttp.accel-x86.jsx`) are **merged 1+n bundles** per the espack merge
+spec:
+
+- **ONE loader object** — the merge concatenates the ESON, ESB64, and
+  eshttp manifests into a single loader (no nested `var ESPAK`
+  redefinition; `$.global.ESPAK` last-wins idempotent).
+- **ONE shared ESB64Native accelerator** — deduped across the merged
+  manifests (same name+version+bytes dedupe; different bytes = hard error;
+  higher version wins).
+- **Flat payloads, per bitness** — ESONJson + the cli worker + the bridge
+  for the bundle's bitness only (x64 bundle has no x86 payloads and vice
+  versa); no dead weight.
+- **Facades before library** — ESON.facade.jsx and the ESB64 facade are
+  appended BEFORE `dist/eshttp.jsx` evals; the library's codec adapters
+  (vendor-json/vendor-b64) consume `sessionGlobal().ESON` / `.ESB64` first
+  (typeof-guarded, cached once), falling back to the embedded-string
+  lazy-eval in the plain build. Never-throws preserved; plain
+  `dist/eshttp.jsx` behavior identical.
+- **Extraction by name** — the staging adapter calls
+  `ESPAK.extract("eshttp-cli")` / `extract("eshttp-ipc-x64"|"eshttp-ipc-x86")`
+  by name because merged payload indexes are not stable.
+
+Composition command (per bitness, in `eshttp-build.mjs` section 7):
+`espack-build --manifest-out` per component → `espack-merge --merge <eson
+manifest> <esb64 manifest> <eshttp manifest> --out <loader>` → compose
+loader + ESON.facade + ESB64 facade + `dist/eshttp.jsx` + the eshttp
+staging adapter. The v1.0.1 direct-composition accels are superseded (same
+filenames, new contents).
 `<repo>/eshttp/`.
 
 ## 4. Design overview

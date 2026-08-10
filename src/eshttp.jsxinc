@@ -139,6 +139,111 @@ var eshttp = (function() {
     return err;
   }
 
+  // src/state.ts
+  var _defaults = {
+    timeout: 3e4,
+    redirect: "follow",
+    // "follow" | "manual"
+    maxRedirects: 5,
+    verifyTls: true,
+    userAgent: "eshttp/1.0.0",
+    decompress: true,
+    maxBodyBytes: 52428800,
+    // 50 MiB
+    transport: "auto"
+    // "auto" | "native" | "socket"
+  };
+  function defaultUserAgent() {
+    var fallback = _defaults.userAgent || "eshttp/1.0.0";
+    try {
+      if (typeof app === "undefined" || !app) {
+        return fallback;
+      }
+      var name = app.name ? String(app.name) : "";
+      var ver = app.version ? String(app.version) : "";
+      if (!name || !ver) {
+        return fallback;
+      }
+      var comment = name + " " + ver;
+      var platform = platformToken();
+      if (platform) {
+        comment += "; " + platform;
+      }
+      return "eshttp/" + _VERSION + " (" + comment + ")";
+    } catch (e) {
+      return fallback;
+    }
+  }
+  function platformToken() {
+    try {
+      if (typeof $ === "undefined" || !$.os) {
+        return "";
+      }
+      var os = String($.os);
+      var plat = "";
+      if (/windows/i.test(os)) {
+        plat = "Windows";
+        var arch = "";
+        try {
+          if (typeof $.getenv === "function" && $.getenv("PROCESSOR_ARCHITECTURE")) {
+            arch = String($.getenv("PROCESSOR_ARCHITECTURE"));
+          }
+        } catch (e1) {
+          arch = "";
+        }
+        if (/AMD64|x64/i.test(arch)) {
+          plat = "Windows NT 10.0; Win64; x64";
+        } else if (/x86|IA32/i.test(arch)) {
+          plat = "Windows NT 10.0; Win32; x86";
+        } else {
+          plat = "Windows";
+        }
+      } else if (/mac/i.test(os)) {
+        plat = "Macintosh";
+      } else {
+        plat = os;
+      }
+      return plat.replace(/[\r\n()]/g, "").trim();
+    } catch (e) {
+      return "";
+    }
+  }
+  var _VERSION = "1.0.0";
+  var _forcedTransport = null;
+  var _currentTransport = "none";
+  var _detectedTransport = null;
+  var _nativeCacheKey = "__eshttp_native_v1";
+  var _nativeCache = null;
+  var _ABI = "http-v1";
+  var _facade = null;
+  function setFacade(f) {
+    _facade = f;
+  }
+  function noNetwork() {
+    return !!(_facade && _facade.__noNetwork);
+  }
+  function setForcedTransport(v) {
+    _forcedTransport = v;
+  }
+  function setCurrentTransport(v) {
+    _currentTransport = v;
+  }
+  function setDetectedTransport(v) {
+    _detectedTransport = v;
+  }
+  function setNativeCache(v) {
+    _nativeCache = v;
+  }
+  function sessionGlobal() {
+    if (typeof $ !== "undefined" && $.global) {
+      return $.global;
+    }
+    if (typeof global !== "undefined" && global) {
+      return global;
+    }
+    return void 0;
+  }
+
   // src/vendor-json.ts
   var _eson = null;
   var _esonTried = false;
@@ -147,6 +252,15 @@ var eshttp = (function() {
       return _eson;
     }
     _esonTried = true;
+    try {
+      var sg = sessionGlobal();
+      if (sg && sg.ESON && typeof sg.ESON.parse === "function" && typeof sg.ESON.stringify === "function") {
+        _eson = sg.ESON;
+        return _eson;
+      }
+    } catch (e) {
+      _eson = null;
+    }
     if (typeof ESON_ACCEL_BUNDLE === "string" && ESON_ACCEL_BUNDLE.length > 0) {
       try {
         var dollar = typeof $ !== "undefined" ? $ : null;
@@ -334,6 +448,15 @@ var eshttp = (function() {
       return _esb64;
     }
     _esb64Tried = true;
+    try {
+      var sg = sessionGlobal();
+      if (sg && sg.ESB64 && typeof sg.ESB64.atob === "function" && typeof sg.ESB64.btoa === "function" && typeof sg.ESB64.utf8Encode === "function" && typeof sg.ESB64.utf8Decode === "function") {
+        _esb64 = sg.ESB64;
+        return _esb64;
+      }
+    } catch (e) {
+      _esb64 = null;
+    }
     if (typeof ESB64_ACCEL_BUNDLE === "string" && ESB64_ACCEL_BUNDLE.length > 0) {
       try {
         var dollar = typeof $ !== "undefined" ? $ : null;
@@ -878,111 +1001,6 @@ var eshttp = (function() {
       }
     }
     return { body: out.join("") };
-  }
-
-  // src/state.ts
-  var _defaults = {
-    timeout: 3e4,
-    redirect: "follow",
-    // "follow" | "manual"
-    maxRedirects: 5,
-    verifyTls: true,
-    userAgent: "eshttp/1.0.0",
-    decompress: true,
-    maxBodyBytes: 52428800,
-    // 50 MiB
-    transport: "auto"
-    // "auto" | "native" | "socket"
-  };
-  function defaultUserAgent() {
-    var fallback = _defaults.userAgent || "eshttp/1.0.0";
-    try {
-      if (typeof app === "undefined" || !app) {
-        return fallback;
-      }
-      var name = app.name ? String(app.name) : "";
-      var ver = app.version ? String(app.version) : "";
-      if (!name || !ver) {
-        return fallback;
-      }
-      var comment = name + " " + ver;
-      var platform = platformToken();
-      if (platform) {
-        comment += "; " + platform;
-      }
-      return "eshttp/" + _VERSION + " (" + comment + ")";
-    } catch (e) {
-      return fallback;
-    }
-  }
-  function platformToken() {
-    try {
-      if (typeof $ === "undefined" || !$.os) {
-        return "";
-      }
-      var os = String($.os);
-      var plat = "";
-      if (/windows/i.test(os)) {
-        plat = "Windows";
-        var arch = "";
-        try {
-          if (typeof $.getenv === "function" && $.getenv("PROCESSOR_ARCHITECTURE")) {
-            arch = String($.getenv("PROCESSOR_ARCHITECTURE"));
-          }
-        } catch (e1) {
-          arch = "";
-        }
-        if (/AMD64|x64/i.test(arch)) {
-          plat = "Windows NT 10.0; Win64; x64";
-        } else if (/x86|IA32/i.test(arch)) {
-          plat = "Windows NT 10.0; Win32; x86";
-        } else {
-          plat = "Windows";
-        }
-      } else if (/mac/i.test(os)) {
-        plat = "Macintosh";
-      } else {
-        plat = os;
-      }
-      return plat.replace(/[\r\n()]/g, "").trim();
-    } catch (e) {
-      return "";
-    }
-  }
-  var _VERSION = "1.0.0";
-  var _forcedTransport = null;
-  var _currentTransport = "none";
-  var _detectedTransport = null;
-  var _nativeCacheKey = "__eshttp_native_v1";
-  var _nativeCache = null;
-  var _ABI = "http-v1";
-  var _facade = null;
-  function setFacade(f) {
-    _facade = f;
-  }
-  function noNetwork() {
-    return !!(_facade && _facade.__noNetwork);
-  }
-  function setForcedTransport(v) {
-    _forcedTransport = v;
-  }
-  function setCurrentTransport(v) {
-    _currentTransport = v;
-  }
-  function setDetectedTransport(v) {
-    _detectedTransport = v;
-  }
-  function setNativeCache(v) {
-    _nativeCache = v;
-  }
-  function sessionGlobal() {
-    if (typeof $ !== "undefined" && $.global) {
-      return $.global;
-    }
-    if (typeof global !== "undefined" && global) {
-      return global;
-    }
-    return void 0;
   }
 
   // src/context.ts

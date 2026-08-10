@@ -11,7 +11,7 @@
 [![Live: Wikipedia W fetch](https://img.shields.io/badge/live-Wikipedia%20W%20fetch%20PASS-green)](#validation)
 [![Adobe: Creative Suite](https://img.shields.io/badge/Adobe%20-Creative%20Suite-red?logo=adobe&logoColor=white)](https://extendscript.docsforadobe.dev/)
 [![Engine](https://img.shields.io/badge/ExtendScript-ES3-green)](#compatibility)
-[![Size](https://img.shields.io/badge/runtime-338%20KB-orange)](#which-build-should-i-use)
+[![Size](https://img.shields.io/badge/runtime-339%20KB-orange)](#which-build-should-i-use)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL%203.0--or--later-blue)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 </div>
@@ -159,19 +159,31 @@ warm worker, process-isolated. Add `eshttp-native-accel.jsx` only for the
 narrow in-process-DLL case. The plain `dist/eshttp.jsx` alone gives you
 socket-only.
 
-**Artifact inventory (v1.0.1, per-bitness — no dead payloads):**
+**Artifact inventory (v1.1.0, per-bitness — no dead payloads):**
 
 | Artifact | Contents | Size |
 |---|---|---|
-| `dist/eshttp.jsx` | library IIFE only (codec accel payloads embedded) | 338 KB |
-| `dist/eshttp.accel-x64.jsx` | cli x64 worker + ipc-x64 bridge, staging adapter | 693 KB |
-| `dist/eshttp.accel-x86.jsx` | cli x86 worker + ipc-x86 bridge, staging adapter | 639 KB |
-| `dist/eshttp-native-accel.jsx` | eshttp-x64.dll (in-process WinHTTP lane, opt-in) | 613 KB |
+| `dist/eshttp.jsx` | library IIFE only (codec accel payloads embedded) | 339 KB |
+| `dist/eshttp.accel-x64.jsx` | merged 1+n bundle: ESONJson + cli x64 worker + ipc-x64 bridge, one shared ESB64Native accel (deduped), ESON/ESB64 facades | 927 KB |
+| `dist/eshttp.accel-x86.jsx` | merged 1+n bundle: ESONJson + cli x86 worker + ipc-x86 bridge, one shared ESB64Native accel (deduped), ESON/ESB64 facades | 873 KB |
+| `dist/eshttp-native-accel.jsx` | eshttp-x64.dll (in-process WinHTTP lane, opt-in) | 614 KB |
 | `dist/eshttp-native-accel-x86.jsx` | eshttp-x86.dll (legacy 32-bit hosts, opt-in) | 576 KB |
-| `dist/eshttp-core.esm.mjs` | ESM core (Node harnesses) | 329 KB |
+| `dist/eshttp-core.esm.mjs` | ESM core (Node harnesses) | 330 KB |
+
+**Merge-spec composition (v1.1.0).** The per-bitness accels are now **merged
+1+n bundles** per the espack merge spec: ONE loader object (no nested
+`var ESPAK`), ONE shared ESB64Native accelerator (deduped across the
+merged ESON/ESB64/eshttp manifests), and flat payloads — ESONJson + the
+worker + the bridge for the bundle's bitness only. The ESON and ESB64
+facades are appended before the library evals, so the codec adapters consume
+them by name (`sessionGlobal().ESON` / `.ESB64`) with the embedded-string
+lazy-eval as fallback — identical public behavior, never-throws preserved.
+The staging adapter extracts payloads **by name** (merged indexes are not
+stable). The v1.0.1 direct-composition accels are superseded by this merge
+(same filenames, new contents).
 
 The binaries are release assets, not repo files (`.gitignore` excludes build
-artifacts). Each accel is an espack 1+n self-extracting bundle: eval once,
+artifacts). Each accel is an espack self-extracting bundle: eval once,
 and it stages its payloads byte-exact to `%LOCALAPPDATA%\eshttp\` (the
 resolution root for the worker and the DLL) — no C toolchain, no manual
 staging. The 4-payload `eshttp.accel.jsx` from v1.0.0 is retired.
@@ -499,13 +511,22 @@ Degradation ladder (v1.0.1): **cli(pipe) → cli-oneshot → native(opt-in) →
 socket → none**.
 
 Verified live (Illustrator 30.6.0, all firewall rules enabled, none
-modified): the one-shot lane fetched Wikipedia's W SVG through the firewall
-(done-poll ~400 ms, status 200, 2440 bytes, `image/svg+xml`); the release
-accel's pipe lane fetched the same SVG through the REAL worker over the
-named pipe (200/2440 B, zero errors, `meta.path: "cli"`). The pipe lane is
-~44x faster than one-shot on wrapper-transport overhead (0.064 vs 2.819 ms
-warm median; see [Performance](#performance)). The full contract is in
+modified, **v1.0.1 artifacts**): the one-shot lane fetched Wikipedia's W SVG
+through the firewall (done-poll ~400 ms, status 200, 2440 bytes,
+`image/svg+xml`); the release accel's pipe lane fetched the same SVG through
+the REAL worker over the named pipe (200/2440 B, zero errors,
+`meta.path: "cli"`). The pipe lane is ~44x faster than one-shot on
+wrapper-transport overhead (0.064 vs 2.819 ms warm median; see
+[Performance](#performance)). The full contract is in
 [`docs/cli-transport.md`](docs/cli-transport.md).
+
+> **Live status of the v1.1.0 merged accels: PASS.** The merged 1+n bundles
+> (eshttp.accel-x64.jsx / eshttp.accel-x86.jsx) are verified live end-to-end
+> (T29 re-gate, Illustrator 30.6.0): worker stages as `eshttp-cli.exe` (pipe
+> lane active), the ESB64 facade codec lane runs (surface-complete check;
+> `base64Encode("f") === "Zg=="` never throws), and Wikipedia's W SVG fetched
+> through the real worker over the named pipe — OK|cli|200|2440, zero
+> errors.
 
 **Stale work-dir files.** The cli lane writes `ESHTTP_*.job` / `ESHTTP_*.done`
 to `%TEMP%\opencode`. The wrapper sweeps stale files at host startup; between

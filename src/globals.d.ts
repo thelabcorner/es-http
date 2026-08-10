@@ -10,6 +10,14 @@
 // are string literals injected by eshttp-build.mjs BEFORE the bundle (the
 // embedded self-extracting sibling bundles — see vendor-json.ts /
 // vendor-b64.ts). They are never parsed by esbuild.
+//
+// T28 (merge architecture v1): the merged-bundle facades ESON / ESB64 (and
+// the espack loader ESPAK) are published on the session global by the
+// composer's facade artifacts — vendor-json.ts / vendor-b64.ts CONSUME them
+// by name (sessionGlobal().ESON / .ESB64) with the embedded strings as the
+// plain-build fallback. They are read via the session-global object, so no
+// ambient declarations are needed here (the same typeof-guarded access
+// pattern as $.global).
 
 declare var $: {
   os: string;

@@ -4,15 +4,22 @@
 // (src/eshttp.jsxinc L100–395) with a THIN ADAPTER over the sibling ESON
 // library, per the coordinator's decision (decision v2, ratified):
 //
-//   - ESON_ACCEL_BUNDLE (injected by eshttp-build.mjs, the self-extracting
-//     ESON bundle — DLL-accelerated when the host can load it, internal ES3
-//     lane otherwise) is LAZY-EVAL'd on first codec use and the facade is
-//     cached. Never re-eval'd per call. A bundle-eval failure can never throw
-//     out of json.parse/stringify (degrade to never-throw null / "null").
-//   - Eval mechanism: indirect eval `(0, eval)(src)` so the bundle's var
-//     declarations land on the session/global object, where `sessionGlobal()`
-//     finds them (`$.global` in ExtendScript, `global` in Node). The bundle's
-//     own install footer also publishes $.global.ESON.
+//   - FACADE SOURCE PRIORITY (T28, merge architecture v1): the adapter FIRST
+//     consumes the merged ESON facade published on the session global
+//     (`$.global.ESON` — published by the merged espack bundle's
+//     ESON.facade.jsx, which attaches ESPAK.load("ESONJson") by NAME).
+//     Only when that global facade is ABSENT (or lacks the required
+//     parse/stringify surface) does the adapter fall back to LAZY-EVAL'ing
+//     the embedded ESON_ACCEL_BUNDLE string (the plain single-file build's
+//     self-extracting bundle — DLL-accelerated when the host can load it,
+//     internal ES3 lane otherwise). The facade is cached; never re-eval'd
+//     per call. Either path failing can never throw out of
+//     json.parse/stringify (degrade to never-throw null / "null").
+//   - Eval mechanism (fallback path only): indirect eval `(0, eval)(src)`
+//     so the bundle's var declarations land on the session/global object,
+//     where `sessionGlobal()` finds them (`$.global` in ExtendScript,
+//     `global` in Node). The bundle's own install footer also publishes
+//     $.global.ESON.
 //
 // Frozen-contract wrappers (coordinator-ratified, api-spec citations):
 //
@@ -52,13 +59,69 @@
 // it depends on state.ts only for sessionGlobal().
 import { sessionGlobal } from './state';
 
-/** ESON facade, cached after first successful eval. */
+/** ESON facade, cached after first successful resolve. */
 var _eson: any = null;
 var _esonTried = false;
 
+/**
+ * Surface-complete check for a candidate ESON facade (T28 stale-global
+ * defense, extended to SURFACE-COMPLETENESS — T29 live-gate hardening):
+ *
+ * Same partial-binding hazard class as ESB64 (externalobject-extendscript
+ * skill "Additional host observations": per-DLL/method binding flakiness).
+ * A facade whose parse/stringify exist but throw on call (broken native
+ * gate swap) must be treated as absent. Trivial-input calls, once per
+ * session at first codec use, cached:
+ *
+ *   - parse("null")  -> null     (JSON text "null" parses to null)
+ *   - stringify({})  -> "{}"     (empty object serializes to "{}")
+ *
+ * Any throw, missing function, or wrong result -> not surface-complete.
+ */
+function esonSurfaceComplete(f: any): boolean {
+  if (!f) { return false; }
+  if (typeof f.parse !== "function" || typeof f.stringify !== "function") {
+    return false;
+  }
+  try {
+    var p = f.parse("null");
+    if (p !== null) { return false; }
+    if (f.stringify({}) !== "{}") { return false; }
+  } catch (e) {
+    return false;   // broken native gate -> not usable
+  }
+  return true;
+}
+
+/**
+ * Resolve the ESON facade. Priority (T28 merge architecture v1):
+ *   1. `sessionGlobal().ESON` — the merged bundle's loader-free facade
+ *      (published by ESON.facade.jsx, ESPAK-attached by name). Consumed as-is
+ *      ONLY when SURFACE-COMPLETE (parse/stringify present AND callable).
+ *      NEVER trusted blindly: typeof-guarded, try/catch, and a global lacking
+ *      the required surface — or one whose functions throw on call (broken
+ *      native gate) — is treated as absent (stale/hostile facade defense).
+ *   2. Embedded ESON_ACCEL_BUNDLE lazy-eval (plain single-file build) — the
+ *      self-extracting bundle, eval'd with a staged `$` so its publish footer
+ *      lands the facade on the session global.
+ *   3. null (both absent) — callers degrade to never-throw results.
+ * Cached in the module closure after the first resolve; never re-probed per
+ * call, never re-eval'd per call.
+ */
 function esonFacade(): any {
   if (_esonTried) { return _eson; }
   _esonTried = true;
+  // Path 1: merged facade on the session global (T28).
+  try {
+    var sg = sessionGlobal();
+    if (sg && esonSurfaceComplete(sg.ESON)) {
+      _eson = sg.ESON;
+      return _eson;
+    }
+  } catch (e) {
+    _eson = null;
+  }
+  // Path 2: embedded self-extracting bundle (plain build fallback).
   if (typeof ESON_ACCEL_BUNDLE === "string" && ESON_ACCEL_BUNDLE.length > 0) {
     try {
       // Bridge $.global to the real global for the duration of the eval (the

@@ -982,9 +982,25 @@ socket → none; additive `meta.path: "cli"`; contract `docs/cli-transport.md`,
      (b) bundle payloads by what a single host actually uses (one bitness, the active
      lane), not by "everything available" — the v1.0.0 4-payload accel carried dead
      weight for every host; (c) no speed claims without a measurement: the pipe-vs-DLL
-     head-to-head (T25) is ~1x, and that honest framing — not "pipe is faster" — is what
-     the docs carry; the real-DLL vs real-pipe live comparison stays unverified-live
-     until a non-firewalled host is available.
+      head-to-head (T25) is ~1x, and that honest framing — not "pipe is faster" — is what
+      the docs carry; the real-DLL vs real-pipe live comparison stays unverified-live
+      until a non-firewalled host is available.
+ 10. **The accel composition consolidated to the espack merge spec (v1.1.0).** Three
+     releases of packaging in one day: v1.0.0's 4-payload monolith (worker + ipc-x64 +
+     ipc-x86 + dll in one bundle) → v1.0.1's per-bitness direct composition (worker +
+     bridge only, native DLL standalone) → v1.1.0's **merged 1+n bundles**: ONE loader,
+     ONE shared ESB64Native accelerator deduped across the ESON/ESB64/eshttp manifests,
+     flat per-bitness payloads (ESONJson + worker + bridge), ESON/ESB64 facades appended
+     before the library evals, and the codec adapters consuming the facades by name with
+     the embedded-string lazy-eval as fallback. **Packaging lessons:** (a) when three
+     sibling libraries ship espack bundles, a merge spec (manifest schema, dedupe rules,
+     facade ordering) beats hand-composing nested loaders — one loader, one shared
+     accelerator, no `var ESPAK` redefinition; (b) facade-before-library injection turns
+     embedded string payloads into a fallback rather than the primary path — same public
+     behavior, smaller eval surface; (c) merged payload indexes are not stable — extract
+     by name; (d) versioning tracks the packaging evolution (v1.0.1 default-tier,
+     v1.1.0 merge) while http-api-v1 stays frozen — packaging restructures are minor
+     bumps, never contract changes.
 
 ---
 

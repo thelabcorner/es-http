@@ -4,12 +4,19 @@
 // (src/eshttp.jsxinc L396–874) with a THIN ADAPTER over the sibling ESB64
 // library, per the coordinator's decision (decision v2, ratified):
 //
-//   - ESB64_ACCEL_BUNDLE (injected by eshttp-build.mjs, the self-extracting
-//     ESB64 bundle — ESB64Native_v1.dll accelerated when the host can load
-//     it, internal ES3 lane otherwise) is LAZY-EVAL'd on first codec use and
-//     the facade is cached. Never re-eval'd per call. A bundle-eval failure
-//     degrades to never-throw best-effort results.
-//   - Eval mechanism: indirect eval `(0, eval)(src)` (see vendor-json.ts).
+//   - FACADE SOURCE PRIORITY (T28, merge architecture v1): the adapter FIRST
+//     consumes the merged ESB64 facade published on the session global
+//     (`$.global.ESB64` — published by the merged espack bundle's ESB64
+//     facade, which attaches ESPAK.attach("ESB64Native") by NAME). Only when
+//     that global facade is ABSENT (or lacks the required atob/btoa/utf8
+//     surface) does the adapter fall back to LAZY-EVAL'ing the embedded
+//     ESB64_ACCEL_BUNDLE string (the plain single-file build's
+//     self-extracting bundle — ESB64Native_v1.dll accelerated when the host
+//     can load it, internal ES3 lane otherwise). The facade is cached; never
+//     re-eval'd per call. A facade/global resolution failure degrades to
+//     never-throw best-effort results.
+//   - Eval mechanism (fallback path only): indirect eval `(0, eval)(src)`
+//     (see vendor-json.ts).
 //
 // Contract mapping (test/parity/esb64-parity.mjs + 40-codec-parity.js are
 // the acceptance gates; the jsxinc lanes were themselves validated against
@@ -36,13 +43,83 @@
 // it depends on state.ts only for sessionGlobal().
 import { sessionGlobal } from './state';
 
-/** ESB64 facade, cached after first successful eval. */
+/** ESB64 facade, cached after first successful resolve. */
 var _esb64: any = null;
 var _esb64Tried = false;
 
+/**
+ * Surface-complete check for a candidate ESB64 facade (T28 stale-global
+ * defense, extended to SURFACE-COMPLETENESS — T29 live-gate bug 2):
+ *
+ * A facade may pass a `typeof === "function"` presence check yet be BROKEN:
+ * the merged bundle's ESB64 facade swaps its native lane in via
+ * `ESPAK.attach(...).onMode("native", lib, impl)` — and when the shared
+ * ESB64Native accel fails to bind (per-DLL/method binding flakiness, see
+ * externalobject-extendscript skill "Additional host observations"), the
+ * swap can install `impl = {}` (buildNative returned null/empty), leaving
+ * `ESB64.atob/btoa` as `undefined` or as stubs that call a missing
+ * `lib.b64encode` -> "is not a function" THROW on first use. The frozen
+ * contract REQUIRES the ES3 lane (never-throw) when the native lane is
+ * unavailable — a partially-broken native facade must NEVER be surfaced.
+ *
+ * Check: every required public method must be present AND CALLABLE on a
+ * trivial input, returning a string:
+ *
+ *   - btoa("")     -> ""      (latin1 encode of empty)
+ *   - atob("")     -> ""      (forgiving decode of empty)
+ *   - utf8Encode("") -> ""    (TextEncoder of empty)
+ *   - utf8Decode("") -> ""    (UTF-8 decode of empty)
+ *
+ * Any throw, undefined function, or non-string result -> not surface-complete
+ * -> the caller treats the facade as ABSENT and falls back to the embedded
+ * bundle (or never-throw degradation). These calls run ONCE per session at
+ * first codec use (cached), on trivial inputs — negligible cost.
+ */
+function esb64SurfaceComplete(f: any): boolean {
+  if (!f) { return false; }
+  if (typeof f.btoa !== "function" || typeof f.atob !== "function" ||
+      typeof f.utf8Encode !== "function" || typeof f.utf8Decode !== "function") {
+    return false;
+  }
+  try {
+    if (f.btoa("") !== "") { return false; }
+    if (f.atob("") !== "") { return false; }
+    if (f.utf8Encode("") !== "") { return false; }
+    if (f.utf8Decode("") !== "") { return false; }
+  } catch (e) {
+    return false;   // broken native lane (throwing stub) -> not usable
+  }
+  return true;
+}
+
+/**
+ * Resolve the ESB64 facade. Priority (T28 merge architecture v1):
+ *   1. `sessionGlobal().ESB64` — the merged bundle's loader-free facade
+ *      (published by the ESB64 facade, ESPAK-attached by name). Consumed
+ *      as-is ONLY when SURFACE-COMPLETE (all four public methods present AND
+ *      callable — T29 bug 2: a partially-broken native facade whose swap
+ *      installed undefined/throwing stubs must be treated as absent).
+ *   2. Embedded ESB64_ACCEL_BUNDLE lazy-eval (plain single-file build) — the
+ *      self-extracting bundle, eval'd with a staged `$` so its publish
+ *      footer lands the facade on the session global.
+ *   3. null (both absent) — callers degrade to never-throw results.
+ * Cached in the module closure after the first resolve; never re-probed per
+ * call, never re-eval'd per call.
+ */
 function esb64Facade(): any {
   if (_esb64Tried) { return _esb64; }
   _esb64Tried = true;
+  // Path 1: merged facade on the session global (T28).
+  try {
+    var sg = sessionGlobal();
+    if (sg && esb64SurfaceComplete(sg.ESB64)) {
+      _esb64 = sg.ESB64;
+      return _esb64;
+    }
+  } catch (e) {
+    _esb64 = null;
+  }
+  // Path 2: embedded self-extracting bundle (plain build fallback).
   if (typeof ESB64_ACCEL_BUNDLE === "string" && ESB64_ACCEL_BUNDLE.length > 0) {
     try {
       // The bundle publishes its facade onto $.global (tail footer). In the

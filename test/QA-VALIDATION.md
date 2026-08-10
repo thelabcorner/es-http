@@ -462,3 +462,59 @@ UNVERIFIED-LIVE-pending-non-firewalled-host. No numbers invented.
 Per-bitness artifacts, pipe-primary default, driver-level pipe-vs-DLL parity
 measured, real-DLL-live honestly flagged UNVERIFIED. Release-ready (subject
 to T26 docs + coordinator go/no-go).
+
+## T29 — v1.1.0 merged-accel final gate (2026-08-10): PASS
+
+### Live merged-accel eval (Illustrator 30.6.0 COM): PASS
+
+Eval dist/eshttp.accel-x64.jsx (merged 1+n, 926,874 B) — the FIRST live proof
+of the merged facade consumption (T27 composition + T28 codec adapters):
+
+- Facades present on $.global: eshttp + ESON (parse/stringify) + ESB64
+  (atob/btoa) + ESPAK (load) — all true.
+- Payloads extracted BY NAME: eshttp-cli.exe (worker) + eshttp-ipc-x64.dll
+  (bridge) + ESONJson_v1.dll — all staged, byte-exact.
+- Codec lane THROUGH THE FACADES (not the embedded fallback): json.parse via
+  ESON (codecJson true), base64Encode('f')==='Zg==' via ESB64 (codecB64 true),
+  utf8ByteLength via ESB64 (codecUtf8 true) — all never-throw.
+- Pipe fetch of the Wikipedia W SVG through the merged worker over the named
+  pipe: transportInfo 'cli', meta.path 'cli', status 200, 2440 B, <svg> body,
+  ZERO errors — OK|cli|200|2440.
+
+### Two integration gaps found by the live gate + fixed
+
+1. WORKER NAMING (T27 loader vs T24 driver): the merged loader staged
+   eshttp-cli_v1.exe (GC name_v* naming) but findCliExe() resolves
+   eshttp-cli.exe -> pipe lane couldn't find the worker (transport 'none').
+   Fixed on the build side (cli staged without the _v1 suffix).
+2. CODEC ES3 FALLBACK (T28): eshttp.helpers.base64Encode threw
+   lib.b64encode is not a function — the ESB64 facade's native lane
+   produced a broken impl when the shared ESB64Native accel didn't bind.
+   Core-porter added a SURFACE-COMPLETE check (each required method callable
+   on a trivial input; any throw/non-string -> facade treated absent ->
+   embedded-bundle fallback). Verified: base64Encode('f')==='Zg==' never
+   throws on the merged accel.
+
+Both were live-only (Node suites use fake responders); the live gate was the
+detector. Skill §14: the v1.0.1 live result was correctly NOT carried forward
+as a v1.1.0 claim until the merged gate passed (docs corrected by
+recon-architect to PENDING until re-gate green).
+
+### Full matrix (merged v1.1.0 state)
+
+ESM 204/0, IIFE 204/0, parity 753/0, never-throw 736/0, esb64 103,711/0,
+audit-dist clean.
+
+### Flatness + dedupe (merged accel-x64)
+
+- ESON_ACCEL_BUNDLE / ESB64_ACCEL_BUNDLE counts == plain library exactly (4/4)
+  — transition residue, NOT nested loaders.
+- ESPAK published exactly once (single loader); no ar ESPAK redefinition.
+- Shared ESB64Native deduped to one (payload manifests flat per bitness).
+
+### v1.1.0 release candidate status
+
+Merged artifacts verified live end-to-end: facades consumed, codec never-
+throws via the ES3 fallback when native is absent, pipe fetch through the
+merged worker OK|cli|200|2440. Release-ready (subject to T30 docs flip to
+PASS + coordinator go/no-go).
