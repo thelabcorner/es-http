@@ -957,17 +957,34 @@ socket → none; additive `meta.path: "cli"`; contract `docs/cli-transport.md`,
     breakthrough (§14 lesson 4), but its per-request spawn cost (~15-20 ms process start +
     WinHTTP session cold-start) is the dominant latency. The named-pipe worker
     (`eshttp-cli.exe --worker`) upgrades the SAME process boundary: a persistent
-    single-instance server holds the WinHTTP session + connection pool + TLS cache warm
-    across requests (true keep-alive), and a pure-pipe-client bridge DLL (`eshttp-ipc.dll`,
-    freestanding, KERNEL32-only) carries requests into the host with hard deadlines and
-    bounded reports. The pipe lane is the driver's PRIMARY cli path (`meta.path "cli"`);
-    the one-shot becomes the degradation lane (`meta.path "cli-oneshot"`). Performance
-    lesson: when a spawned-child transport is required by host-network policy, amortize
-    the spawn with a persistent worker + warm session rather than accepting per-request
-    process cost — the boundary (pipe IPC) is local kernel IPC, so it is firewall-safe
-    by the same process-image argument as the one-shot (lesson 3). The warm pipe median vs
-    the 1.746 ms one-shot baseline is measured in the T21 release gate (N>=5, env line
-    reported) — do not write the number here before the measurement lands.
+     single-instance server holds the WinHTTP session + connection pool + TLS cache warm
+     across requests (true keep-alive), and a pure-pipe-client bridge DLL (`eshttp-ipc.dll`,
+     freestanding, KERNEL32-only) carries requests into the host with hard deadlines and
+     bounded reports. The pipe lane is the driver's PRIMARY cli path (`meta.path "cli"`);
+     the one-shot becomes the degradation lane (`meta.path "cli-oneshot"`). Performance
+     lesson: when a spawned-child transport is required by host-network policy, amortize
+     the spawn with a persistent worker + warm session rather than accepting per-request
+     process cost — the boundary (pipe IPC) is local kernel IPC, so it is firewall-safe
+     by the same process-image argument as the one-shot (lesson 3). Measured (T21, dual-
+     source): pipe warm median 0.064 ms vs one-shot 2.819 ms (~44x); cold-with-spawn
+     0.260 ms. Pipe vs native-DLL driver-level (T25): ~1x parity (pipe 0.071–0.078 ms vs
+     DLL 0.084–0.141 ms) — both sub-0.15 ms, network-dominated; the real-DLL vs real-pipe
+     live comparison is unverified-live (no firewall window).
+  9. **The firewall-escape transport became the DEFAULT (v1.0.1 packaging).** After the
+     pipe lane proved firewall-safe by construction (kernel IPC, child process image) at
+     ~1x parity with the in-process DLL at the wrapper level, the sponsor restructured
+     packaging: pipe is the default tier (`cli(pipe) → cli-oneshot → native(opt-in) →
+     socket → none`), per-bitness accels carry only the worker + bridge for one bitness
+     (no dead payloads), and the native DLL ships standalone as an opt-in build.
+     **Packaging lessons:** (a) a transport's value can flip its tier position when its
+     boundary is architecturally safer AND measured at parity — default-order is a
+     packaging decision, not a contract change (http-api-v1 + meta.path values frozen);
+     (b) bundle payloads by what a single host actually uses (one bitness, the active
+     lane), not by "everything available" — the v1.0.0 4-payload accel carried dead
+     weight for every host; (c) no speed claims without a measurement: the pipe-vs-DLL
+     head-to-head (T25) is ~1x, and that honest framing — not "pipe is faster" — is what
+     the docs carry; the real-DLL vs real-pipe live comparison stays unverified-live
+     until a non-firewalled host is available.
 
 ---
 

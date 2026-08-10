@@ -2350,16 +2350,18 @@ var eshttp = (function() {
       setCurrentTransport(tSocket);
       return tSocket;
     }
-    var cache = probeNative();
     var t;
-    if (cache.accel && cache.available && !cache.dead) {
-      t = "native";
-    } else if (cliAvailable()) {
+    if (cliAvailable()) {
       t = "cli";
-    } else if (socketAvailable()) {
-      t = "socket";
     } else {
-      t = "none";
+      var cache = probeNative();
+      if (cache.accel && cache.available && !cache.dead) {
+        t = "native";
+      } else if (socketAvailable()) {
+        t = "socket";
+      } else {
+        t = "none";
+      }
     }
     setCurrentTransport(t);
     return t;

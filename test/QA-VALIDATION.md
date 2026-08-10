@@ -414,3 +414,51 @@ V8, and only the live host reveals it.
 Verified end-to-end: one-file release artifact delivers working native +
 bridge + worker + pipe transports in a live host; matrix 204/0; pipe ~44x
 faster than oneshot. Release-ready.
+
+## T25 — Pipe-vs-DLL head-to-head + v1.0.1 re-gate (2026-08-10): PASS
+
+### Driver-level pipe-vs-native-DLL head-to-head (measured)
+
+Sponsor requirement (no speed claims without measurement): the 44x was
+pipe-vs-oneshot (driver-level). The pipe-vs-native-DLL comparison was
+UNMEASURED. This bench (test/parity/dll-vs-pipe-bench.mjs) measures it:
+both lanes with FAKE responders in the same harness (wrapper-level transport
+overhead, apples-to-apples), N=10 warm 5, 3 runs, env node v22.23.2 win32 x64:
+
+| Lane | median | range (3 runs) |
+|---|---|---|
+| native-DLL (ExternalObject eshttp_request, in-process) | 0.084-0.141 ms | p95 ~0.33-0.36 |
+| pipe (bridge + named-pipe worker) | 0.071-0.078 ms | p95 ~0.18-0.41 |
+| pipe-vs-DLL ratio | 0.55-0.87x | — |
+
+VERDICT: the pipe lane is at PARITY or marginally CHEAPER wrapper overhead
+than the in-process ExternalObject DLL boundary; both are sub-0.15 ms, so
+the real-world comparison is dominated by network/WinHTTP latency, not the
+transport boundary. No pipe-vs-DLL speed claim beyond parity. The 44x
+remains pipe-vs-oneshot.
+
+### UNVERIFIED-LIVE (documented, never fabricated)
+
+The REAL eshttp.dll vs REAL pipe-worker LIVE comparison requires a
+NON-FIREWALLED Adobe host. This machine's per-app firewall rule blocks the
+DLL lane even for loopback, and the sponsor ruled out firewall windows.
+Per the never-fabricate rule, the live real-DLL comparison is documented as
+UNVERIFIED-LIVE-pending-non-firewalled-host. No numbers invented.
+
+### v1.0.1 re-gate (T23 per-bitness accels + T24 pipe-primary default)
+
+- Per-bitness artifacts: eshttp.accel-x64.jsx (692,639 B) + eshttp.accel-x86.jsx
+  (638,685 B); separate eshttp-native-accel.jsx (613,318 B) + -x86.jsx.
+- LIVE per-bitness accel smoke (Illustrator 30.6.0 COM): accel-x64 evals live,
+  cli + ipc binaries extract, pipe lane active, W SVG through the REAL worker:
+  OK|cli|200|2440, zero errors.
+- Full matrix on v1.0.1 (pipe-primary tier): ESM 204/0, IIFE 204/0 (one
+  transient 202/2 flake on a single IIFE run; clean re-run 204/0 — not a
+  regression). parity 753/0, never-throw 736/0, esb64 103,711/0, audit 0/0.
+- Default tier confirmed pipe-primary (cli(pipe) -> native -> socket -> none).
+
+### v1.0.1 release candidate status
+
+Per-bitness artifacts, pipe-primary default, driver-level pipe-vs-DLL parity
+measured, real-DLL-live honestly flagged UNVERIFIED. Release-ready (subject
+to T26 docs + coordinator go/no-go).

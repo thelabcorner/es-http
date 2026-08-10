@@ -46,13 +46,15 @@ Rationale (sponsor direction): **no firewall rules are ever modified**; the
 escape is architectural (child process image ≠ blocked app image). This is
 the same pattern as ArcFit's one-shot EXE job-file IPC.
 
-### 1.1 Transport tier (binding — coordinator ruling, T9/T19 lock the code)
+### 1.1 Transport tier (binding — coordinator ruling, T24 locks the code)
 
-Tier order: **native (eshttp.dll) → cli → socket (ES3) → none**, where `cli`
-has two lanes: **pipe** (`meta.path: "cli"`, primary) and **one-shot**
-(`meta.path: "cli-oneshot"`, degradation). `cli` is an **ADDITIVE transport**
-— auto-selected when `ExternalObject` is unavailable or firewalled but the
-worker/EXE can run. `result.meta.path` gains the additive values `"cli"` and
+Tier order (v1.0.1): **cli(pipe) → cli-oneshot → native(opt-in) → socket →
+none**, where `cli` has two lanes: **pipe** (`meta.path: "cli"`, default)
+and **one-shot** (`meta.path: "cli-oneshot"`, degradation). The native
+in-process accelerator is an **opt-in** lane: reached by
+`forceTransport("native")` or when the separate native build is staged;
+without it, auto-selection never tries the DLL. `cli` is an **ADDITIVE
+transport** — `result.meta.path` gains the additive values `"cli"` and
 `"cli-oneshot"` (documented, **not** a contract bump — consumers must
 tolerate unknown meta.path values per api-spec §3 forward-compat).
 `transportInfo()` reports `transport: "cli"` with the same 7-key shape
@@ -210,15 +212,21 @@ rewrite job, retry once; then degrade to the one-shot job-file lane
 (§2–§7); then socket; then none. `meta.path`: `"cli"` (pipe),
 `"cli-oneshot"` (one-shot).
 
-**Perf (measured, T21 — `test/parity/pipe-bench.mjs`, fake responders, no
-network; env node v22.23.2 win32 x64):** pipe (warm, named-pipe) **median
+**Perf (measured, T21 + T25 — `test/parity/pipe-bench.mjs`, fake responders,
+no network; env node v22.23.2 win32 x64):** pipe (warm, named-pipe) **median
 0.064 ms, p95 0.157 ms, sd 0.039 ms (n=10)** vs oneshot (job-file) **median
 2.819 ms, p95 3.413 ms, sd 0.350 ms (n=10)** — ~44x pipe/oneshot (same-run
 pair, wrapper-transport overhead). Pipe cold-with-spawn (ensureWorker
 included) 0.260 ms, warming to 0.064 ms — the spawn-amortization evidence
 (the persistent worker amortizes spawn + WinHTTP cold-start to zero).
-Baseline captured at `test/parity/baseline.json`. The release gate adds the
-real-pipe warm fetch vs one-shot in the host (200/2440 B live spot-check).
+Baseline captured at `test/parity/baseline.json`. Pipe vs native-DLL
+(driver-level head-to-head, T25): pipe median 0.071–0.078 ms vs native-DLL
+0.084–0.141 ms (ratio 0.55–0.87x, N=10 warm 5, 3 runs, same harness) — **~1x
+parity**, both sub-0.15 ms, so real-world comparisons are network-dominated,
+not transport-selected. The real-DLL vs real-pipe live comparison is
+unverified-live (no firewall window per sponsor; no fabricated numbers). The
+release gate adds the real-pipe warm fetch vs one-shot in the host
+(200/2440 B live spot-check).
 
 ---
 

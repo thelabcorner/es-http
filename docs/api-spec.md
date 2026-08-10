@@ -391,7 +391,7 @@ On the **socket** path only these are producible: `invalid-args`,
 {
   host: "Adobe Illustrator",        // app.name, or null outside Adobe host
   platform: "Windows",               // "Windows" | "Macintosh" from $.os
-  transport: "native",               // "native" | "socket" | "none"
+  transport: "cli",                   // "cli" | "cli-oneshot" | "native" | "socket" | "none"
   externalObjectAvailable: true,
   socketAvailable: true,
   nativeVersion: "1.0.0",            // eshttp_version(), null if absent
@@ -401,29 +401,54 @@ On the **socket** path only these are producible: `invalid-args`,
 
 `eshttp.transport` (property) is the same `transport` value, always current.
 
+### 9.1 Auto tier order (v1.0.1, T24 — default-order change, not a contract bump)
+
+Auto (`forceTransport("auto")` / `DEFAULTS.transport = "auto"`) selects the
+first AVAILABLE tier in this order:
+
+1. **cli** — the pipe lane (`meta.path: "cli"`) with its job-file one-shot
+   degradation (`meta.path: "cli-oneshot"`). The cli tier is the firewall-escape
+   PRIMARY: `eshttp-cli.exe` runs as a separate process image (not matched by
+   the host firewall), is https-capable (same engine as the DLL), and keeps a
+   warm persistent worker.
+2. **native** — the in-process WinHTTP DLL. OPT-IN in v1.0.1: auto reaches it
+   only when the cli tier is unavailable (exe missing) or session-dead AND the
+   separate native accel/DLL is staged (probe succeeds). `forceTransport("native")`
+   remains the explicit opt-in that forces native even when the pipe is fine.
+3. **socket** — pure-ES3 cleartext fallback.
+4. **none** — no transport available.
+
+This is a **default-order change only**: the public API, the 7-key
+`transportInfo()` surface, and the `meta.path` value set (`"cli"` / `"cli-oneshot"`
+/ `"native"` / `"socket"` / `"none"`) are unchanged. `DEFAULTS.transport` stays
+`"auto"`. Consumers that relied on auto-picking native must either stage the
+native accel AND disable the cli tier, or call `forceTransport("native")`
+explicitly.
+
 ---
 
 ## 10. Transport capability matrix (contract between drivers)
 
-| Capability | native (eshttp/WinHTTP) | socket (ES3) |
-|------------|------------------------|--------------|
-| http:// | ✓ | ✓ |
-| https:// | ✓ (TLS 1.2+) | ✗ → `"unsupported"` |
-| Custom methods | ✓ | ✓ (any token) |
-| Request headers | ✓ | ✓ (subset — some hosts restrict e.g. `Content-Length`; wrapper computes and sends `Host` + `Content-Length`) |
-| Query merge | ✓ (JS-side before ABI call) | ✓ (JS-side) |
-| JSON body | ✓ | ✓ |
-| Binary body (base64) | ✓ | ✗ |
-| Redirect follow | ✓ (in DLL) | ✓ (JS, manual re-request) |
-| Timeout | ✓ (WinHTTP) | ✗ best-effort; `meta.timeoutEnforced=false` when host lacks read timeout |
-| TLS verify off | ✓ (`verifyTls:false`) | n/a |
-| Proxy | ✓ (`opts.proxy`) | ✗ |
-| gzip/deflate auto | ✓ (`decompress`) | ✗ |
-| Response header count | ✓ all | limited to what host returns on headers() |
-| `meta.httpVersion` | ✓ (envelope) | ✓ (parsed from the status line) |
-| `User-Agent` precedence (§6.2) | ✓ identical | ✓ identical |
-| `meta.encodingWasApplied` / `meta.backend` | ✓ | `null` |
-| `opts.json` → `result.data` (§11) | ✓ identical | ✓ identical |
+| Capability | cli pipe (default) | cli oneshot | native (opt-in) | socket (ES3) |
+|---|---|---|---|---|
+| `http://` | yes | yes | yes | yes |
+| `https://` | yes (TLS 1.2+) | yes (TLS 1.2+) | yes (TLS 1.2+) | no → `"unsupported"` |
+| Custom methods | yes | yes | yes | yes (any token) |
+| Request headers | yes | yes | yes | subset (some hosts restrict e.g. `Content-Length`; wrapper computes and sends `Host` + `Content-Length`) |
+| Query merge | yes (JS-side before ABI call) | yes (JS-side) | yes (JS-side before ABI call) | yes (JS-side) |
+| JSON body | yes | yes | yes | yes |
+| Binary body (base64) | yes | yes | yes | no |
+| Redirect follow | yes (in worker) | yes (in EXE) | yes (in DLL) | yes (JS, manual re-request) |
+| Timeout | yes (bounded pipe deadline) | yes (engine + done-poll) | yes (WinHTTP) | no best-effort; `meta.timeoutEnforced=false` when host lacks read timeout |
+| TLS verify off | yes (`verifyTls:false`) | yes | yes (`verifyTls:false`) | n/a |
+| Proxy | yes (`opts.proxy`) | yes | yes (`opts.proxy`) | no |
+| gzip/deflate auto | yes (`decompress`) | yes | yes (`decompress`) | no |
+| Response header count | yes (all) | yes (all) | yes (all) | limited to what host returns on headers() |
+| `meta.httpVersion` | yes (envelope) | yes (envelope) | yes (envelope) | yes (parsed from the status line) |
+| `User-Agent` precedence (§6.2) | yes identical | yes identical | yes identical | yes identical |
+| `meta.encodingWasApplied` / `meta.backend` | `null` | `null` | yes | `null` |
+| `opts.json` → `result.data` (§11) | yes identical | yes identical | yes identical | yes identical |
+| Firewall-escape (per-app outbound block) | **yes** (kernel IPC) | **yes** (child image) | no | no |
 
 Socket path contract details (core-dev):
 - Raw TCP via `new Socket()`; send an HTTP/1.1 request with `Host`,

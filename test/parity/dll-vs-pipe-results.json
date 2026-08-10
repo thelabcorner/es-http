@@ -1,0 +1,30 @@
+{
+  "benchmark": "T25 driver-level pipe vs native-DLL head-to-head",
+  "env": "node v22.23.2 win32 x64",
+  "iter": 10,
+  "warm": 5,
+  "method": "wrapper-level transport overhead, both lanes with FAKE responders (same harness as the 44x pipe-vs-oneshot bench); isolates the transport boundary cost, apples-to-apples",
+  "runs": [
+    {
+      "nativeDllLaneMs": { "median": 0.141, "p95": 0.354, "sd": 0.083 },
+      "pipeLaneMs": { "median": 0.078, "p95": 0.205, "sd": 0.051 },
+      "pipeVsDllRatio": 0.551
+    },
+    {
+      "nativeDllLaneMs": { "median": 0.084, "p95": 0.328, "sd": 0.086 },
+      "pipeLaneMs": { "median": 0.073, "p95": 0.407, "sd": 0.116 },
+      "pipeVsDllRatio": 0.866
+    },
+    {
+      "nativeDllLaneMs": { "median": 0.089, "p95": 0.364, "sd": 0.096 },
+      "pipeLaneMs": { "median": 0.071, "p95": 0.177, "sd": 0.046 },
+      "pipeVsDllRatio": 0.794
+    }
+  ],
+  "summary": {
+    "nativeDllLaneMedianRangeMs": [0.084, 0.141],
+    "pipeLaneMedianRangeMs": [0.071, 0.078],
+    "verdict": "At the driver/wrapper level the pipe lane is at parity or marginally CHEAPER than the in-process ExternalObject DLL boundary (pipe 0.071-0.078ms vs DLL 0.084-0.141ms; ratio 0.55-0.87x). Both are sub-0.15ms — the transport boundary overhead is negligible and roughly equal; the real-world comparison is dominated by network/WinHTTP latency, not the transport selection."
+  },
+  "unverifiedLive": "The REAL eshttp.dll vs REAL pipe-worker live comparison is UNVERIFIED-LIVE — it requires a non-firewalled Adobe host (this machine's per-app firewall rule blocks the DLL lane even for loopback; sponsor ruled out firewall windows). No numbers fabricated for that comparison. Documented per the never-fabricate rule."
+}

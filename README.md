@@ -4,14 +4,14 @@
 
 ## ExtendScript HTTP = E.S.HTTP
 
-### Drop-in `eshttp.request/get/post/put/del/json` — one identical API over native (WinHTTP), a firewall-escape EXE transport, and the ES3 Socket fallback, for Illustrator, InDesign, Photoshop & any ExtendScript host
+### Drop-in `eshttp.request/get/post/put/del/json` — one identical API over the cli pipe transport (default, firewall-escape), an opt-in native WinHTTP lane, and the ES3 Socket fallback, for Illustrator, InDesign, Photoshop & any ExtendScript host
 
 [![Contract: http-api-v1 exact](https://img.shields.io/badge/contract-http--api--v1%20exact-success)](docs/api-spec.md)
 [![Parity: ESON + ESB64](https://img.shields.io/badge/parity-ESON%20%2B%20ESB64%20104k%2B%20checks-purple)](#validation)
 [![Live: Wikipedia W fetch](https://img.shields.io/badge/live-Wikipedia%20W%20fetch%20PASS-green)](#validation)
 [![Adobe: Creative Suite](https://img.shields.io/badge/Adobe%20-Creative%20Suite-red?logo=adobe&logoColor=white)](https://extendscript.docsforadobe.dev/)
 [![Engine](https://img.shields.io/badge/ExtendScript-ES3-green)](#compatibility)
-[![Size](https://img.shields.io/badge/runtime-330%20KB-orange)](#which-build-should-i-use)
+[![Size](https://img.shields.io/badge/runtime-338%20KB-orange)](#which-build-should-i-use)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL%203.0--or--later-blue)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 </div>
@@ -64,16 +64,22 @@ native `JSON` global to lean on.
 `es-http` fills the gap with one API over three transports that degrade
 automatically:
 
-1. **native** — `eshttp.dll`, a C11 DLL loaded via
+1. **cli (default)** — a separate-process transport that **escapes per-app
+   firewall rules** that block `Illustrator.exe` outbound. The primary lane
+   is a **named-pipe IPC worker** (`eshttp-cli.exe --worker`, persistent
+   process, warm WinHTTP session/connection pool) driven by the pure
+   pipe-client `eshttp-ipc.dll`; the degradation lane is a one-shot job-file
+   EXE (`meta.path: "cli-oneshot"`). No firewall rule is ever modified, and
+   the named pipe is local kernel IPC (not network traffic) — see
+   [The firewall-escape transport (cli)](#the-firewall-escape-transport-cli).
+   **This is the default transport** in v1.0.1.
+2. **native (opt-in)** — `eshttp.dll`, a C11 DLL loaded via
    `new ExternalObject("lib:eshttp")`, backed by WinHTTP: HTTPS/TLS 1.2+,
-   real per-phase timeouts, redirects, proxy, gzip. This is the fast path.
-2. **cli** — a separate-process transport that **escapes per-app firewall
-   rules** that block `Illustrator.exe` outbound. The primary lane is a
-   **named-pipe IPC worker** (`eshttp-cli.exe --worker`, persistent process,
-   warm WinHTTP session/connection pool) driven by the pure pipe-client
-   `eshttp-ipc.dll`; the degradation lane is a one-shot job-file EXE
-   (`meta.path: "cli-oneshot"`). No firewall rule is ever modified (see
-   [The firewall-escape transport (cli)](#the-firewall-escape-transport-cli)).
+   real per-phase timeouts, redirects, proxy, gzip. An **in-process
+   accelerator** for non-firewalled hosts; ships as a separate standalone
+   build (`eshttp-native-accel.jsx` or plain DLL release assets), NOT inside
+   the default accel. Opt in with `forceTransport("native")` or by staging
+   the native build so auto-selection can reach it.
 3. **socket** — the pure-ES3 `Socket` object: cleartext HTTP/1.1, used when
    neither native artifact is present.
 
@@ -123,27 +129,52 @@ Result object on every path.
 
 ## Which build should I use?
 
-| | **Runtime build** | **Full build** |
+**Pick by scenario — the table answers "which one do I eval?" for every
+case.** All bundles expose the same full `eshttp.*` API; they differ in
+which binaries they stage and which transport becomes default.
+
+**The cli/pipe build is the recommended default** for the widest audience:
+one artifact works on both firewalled and non-firewalled hosts, it is the
+v1.0.1 default transport, and its architecture is the more robust one —
+the worker is a separate process with hard deadlines and process isolation
+(a hung request cannot wedge the host UI thread), it escapes per-app
+firewall rules by construction (kernel IPC, not network traffic), and it
+injects no in-process network code to trip host security/AV heuristics on
+hardened hosts. The in-process DLL stays the documented opt-in for the
+narrow case that specifically wants it.
+
+| Scenario | Recommended artifact | Why |
 |---|---|---|
-| Files | `dist/eshttp.jsx` (single file, includes the ESON/ESB64 accel payloads) | `dist/eshttp.jsx` + `dist/eshttp-core.esm.mjs` (Node harnesses) |
-| Size | 330 KB | 330 KB + 322 KB |
-| API | full `eshttp.*` surface | same surface; ESM exports for Node |
-| Installs `eshttp` | one global on `$.global` | same |
-| Best for | scripts in Adobe hosts (`#include` / `$.evalFile`) | Node test harnesses and parity tooling |
+| **Any host — RECOMMENDED (the common case)** | **`eshttp.accel-x64.jsx` (or `eshttp.accel-x86.jsx` for 32-bit hosts)** | Pipe is the v1.0.1 default; the worker's separate process image escapes per-app firewall rules (works firewalled AND not), has hard deadlines + process isolation, and no in-process network code. Measured at wrapper parity with the DLL (0.071–0.078 vs 0.084–0.141 ms, T25) |
+| Firewalled host specifically (Illustrator.exe egress blocked) | `eshttp.accel-x64.jsx` (or x86) | The cli worker's separate process image escapes the per-app firewall rule; the in-process DLL lane cannot work here |
+| Non-firewalled host, want the in-process native lane | `eshttp.accel-x64.jsx` + `eshttp-native-accel.jsx` (narrow opt-in) | Pipe-primary default; native via `forceTransport("native")` when the separate DLL is staged — the narrow case that wants in-process WinHTTP |
+| Just the library, no binaries (macOS, or script-only) | `dist/eshttp.jsx` (or `#include eshttp.jsxinc`) | Socket lane for cleartext `http://`; `https://` returns `"unsupported"` without binaries |
+| Node-side harnesses / tests | `dist/eshttp-core.esm.mjs` | ESM core import |
+| Build your own binaries from source | `native/` + `native/BUILD.md` (MSVC, x64+x86) | Full control |
 
-**Rule of thumb:** take `dist/eshttp.jsx` for anything running inside an
-Adobe host; the ESM core exists so the exact same code can be exercised from
-Node.
+**Rule of thumb:** eval the per-bitness pipe accel matching your host
+(`eshttp.accel-x64.jsx` on 64-bit, `eshttp.accel-x86.jsx` on 32-bit) and you
+get the recommended default: cli pipe transport — https, firewall-escape,
+warm worker, process-isolated. Add `eshttp-native-accel.jsx` only for the
+narrow in-process-DLL case. The plain `dist/eshttp.jsx` alone gives you
+socket-only.
 
-The **native binaries are release assets, not repo files** (`.gitignore`
-excludes build artifacts): `eshttp-x64.dll` + `eshttp-x86.dll` (the
-accelerator, both bitnesses), `eshttp-cli.exe` (the firewall-escape
-transport, worker mode), and `eshttp-ipc.dll` (the pipe bridge) ship on the
-[Releases page](#get-the-release). The accel bundle
-(`dist/eshttp.accel.jsx`, 934,211 B, built by `eshttp-build.mjs --accel`) is
-the single-file distribution that stages the binaries on first eval
-(byte-exact extract to `%LOCALAPPDATA%\eshttp`, the resolution root for both
-the EXE and the DLL).
+**Artifact inventory (v1.0.1, per-bitness — no dead payloads):**
+
+| Artifact | Contents | Size |
+|---|---|---|
+| `dist/eshttp.jsx` | library IIFE only (codec accel payloads embedded) | 338 KB |
+| `dist/eshttp.accel-x64.jsx` | cli x64 worker + ipc-x64 bridge, staging adapter | 693 KB |
+| `dist/eshttp.accel-x86.jsx` | cli x86 worker + ipc-x86 bridge, staging adapter | 639 KB |
+| `dist/eshttp-native-accel.jsx` | eshttp-x64.dll (in-process WinHTTP lane, opt-in) | 613 KB |
+| `dist/eshttp-native-accel-x86.jsx` | eshttp-x86.dll (legacy 32-bit hosts, opt-in) | 576 KB |
+| `dist/eshttp-core.esm.mjs` | ESM core (Node harnesses) | 329 KB |
+
+The binaries are release assets, not repo files (`.gitignore` excludes build
+artifacts). Each accel is an espack 1+n self-extracting bundle: eval once,
+and it stages its payloads byte-exact to `%LOCALAPPDATA%\eshttp\` (the
+resolution root for the worker and the DLL) — no C toolchain, no manual
+staging. The 4-payload `eshttp.accel.jsx` from v1.0.0 is retired.
 
 ---
 
@@ -165,10 +196,10 @@ sources. Grab the runnable builds from the
 
 | You are... | Take this release | And this asset |
 |---|---|---|
-| Writing an Illustrator/InDesign/Photoshop script | latest stable | `dist/eshttp.jsx` (drop-in, no native needed — socket fallback) |
-| Wanting HTTPS + real timeouts in the host | latest stable | `dist/eshttp.jsx` + `eshttp-x64.dll` (or `eshttp-x86.dll` for 32-bit hosts) |
-| Inside a firewalled host (outbound blocked for `Illustrator.exe`) | latest stable | `eshttp-cli.exe` (auto-selected when the native lane is unavailable/blocked) |
-| Single-file distribution, no C toolchain | latest stable | `dist/eshttp.accel.jsx` (eval once; stages the EXE, keeps the ES3 fallback) |
+| Writing an Illustrator/InDesign/Photoshop script (any host) | latest stable | `dist/eshttp.jsx` (drop-in; default cli pipe lane works via the accel, socket fallback otherwise) |
+| Default https + firewall-escape, x64 host | latest stable | `dist/eshttp.accel-x64.jsx` (eval once; stages worker + bridge) |
+| Default https + firewall-escape, x86 host | latest stable | `dist/eshttp.accel-x86.jsx` (eval once; stages worker + bridge) |
+| In-process WinHTTP lane (non-firewalled host, opt-in) | latest stable | `dist/eshttp-native-accel.jsx` or `eshttp-x64.dll` / `eshttp-x86.dll` |
 
 No C toolchain is needed to consume any release asset — the DLLs and EXE are
 prebuilt (MSVC, `/MT` static CRT). Sources + build instructions are in
@@ -201,10 +232,22 @@ to it — `#include "eshttp.jsxinc"` keeps working.)
 > selector persist between runs. es-http works without it — it just
 > re-probes, costing one extra `ExternalObject` constructor per run.
 
-### 2. The native accelerator (`eshttp.dll`)
+### 2. The cli pipe transport (default, `eshttp-cli.exe --worker` + `eshttp-ipc.dll`)
 
-For `new ExternalObject("lib:eshttp")` to succeed, `eshttp.dll` must be
-findable. Resolution order (host-dependent — test on each target):
+`es-http` resolves the worker in order: `%LOCALAPPDATA%\eshttp\` → next to
+the running script → `%TEMP%\opencode\`. Stage the **per-bitness pipe accel**
+(`dist/eshttp.accel-x64.jsx` for 64-bit hosts, `dist/eshttp.accel-x86.jsx`
+for 32-bit) — eval once; it extracts the worker + bridge byte-exact to
+`%LOCALAPPDATA%\eshttp\`. The cli pipe lane is the **default transport** in
+v1.0.1: it works through per-app firewall rules (the named pipe is kernel
+IPC, not network traffic) and needs no DLL staging (see
+[Firewall escape](#the-firewall-escape-transport-cli)).
+
+### 3. The native accelerator (`eshttp.dll`) — opt-in
+
+The in-process WinHTTP lane is **opt-in** in v1.0.1. For
+`new ExternalObject("lib:eshttp")` to succeed, `eshttp.dll` must be findable.
+Resolution order (host-dependent — test on each target):
 
 1. **The script's own folder** — next to your `.jsx` file.
 2. **The host application's install folder** — e.g.
@@ -221,7 +264,9 @@ es-http falls back to the next tier automatically.
 es-http loads the DLL for you on first use via
 `new ExternalObject("lib:eshttp")` — guarded in `try/catch`, so a missing,
 wrong-bitness, or broken DLL **never throws**: it simply selects the next
-transport. You never construct the `ExternalObject` yourself.
+transport. You never construct the `ExternalObject` yourself. Because native
+is opt-in, auto-selection reaches it only when it is staged; you can also
+force it explicitly with `forceTransport("native")`.
 
 **Build instructions** live in [`native/BUILD.md`](native/BUILD.md)
 (MSVC `cl /LD`, x86+x64, `/MT` static CRT). The repository ships the complete
@@ -229,28 +274,19 @@ C source + header + selftest; the binary is also attached to every
 [release](#get-the-release), so building is optional for consumers.
 
 **macOS.** There is **no native accelerator** (WinHTTP is Windows-only).
-On macOS the Socket fallback still works for cleartext `http://`; **HTTPS
-returns a documented `"unsupported"` error**.
-
-### 3. The cli transport (`eshttp-cli.exe`)
-
-`es-http` resolves `eshttp-cli.exe` in order: `%LOCALAPPDATA%\eshttp\` →
-next to the running script → `%TEMP%\opencode\`. Drop the release asset into
-`%LOCALAPPDATA%\eshttp\` (the first candidate) or let the accel bundle
-(`dist/eshttp.accel.jsx`) stage it on first eval. When present, the cli
-transport is used automatically whenever the native lane is unavailable or
-blocked by host firewall policy (see
-[Firewall escape](#the-firewall-escape-transport-cli)).
+On macOS the cli pipe lane and Socket fallback still work for cleartext
+`http://`; **HTTPS returns a documented `"unsupported"` error** (no
+accelerator on macOS in v1).
 
 ### Verify the install
 
 ```js
-$.writeln(eshttp.transportInfo().transport);   // "native" | "cli" | "cli-oneshot" | "socket" | "none"
+$.writeln(eshttp.transportInfo().transport);   // "cli" | "cli-oneshot" | "native" | "socket" | "none"
 ```
 
-`"native"` means the DLL loaded and passed its health probe; `"cli"` means
-the EXE transport is active (firewall-escape path); `"socket"` means the
-ES3 fallback is in use.
+`"cli"` means the pipe worker + bridge are active (the v1.0.1 default);
+`"native"` means the opt-in DLL loaded and passed its health probe;
+`"socket"` means the ES3 fallback is in use.
 
 ---
 
@@ -395,8 +431,12 @@ eshttp.resetTransport();            // drop cached selector + cached ExternalObj
 ```
 
 Transport selection is lazy (first `request()`), cached, and follows the tier
-order: **native → cli → socket → none** (see
-[Firewall escape](#the-firewall-escape-transport-cli) for when cli activates).
+order: **cli(pipe) → cli-oneshot → native(opt-in) → socket → none** (v1.0.1).
+The cli pipe lane is the default: it escapes per-app firewall rules by
+construction and needs no DLL staging. The native in-process accelerator is
+an **opt-in** lane — it is reached by `forceTransport("native")` or when the
+separate native build is staged; without it, selection never tries the DLL
+(see [Firewall escape](#the-firewall-escape-transport-cli)).
 
 ### Error taxonomy (`eshttp.error`)
 
@@ -408,7 +448,7 @@ The full 14-code table is in `docs/api-spec.md` §7.
 
 ### Transport capability matrix
 
-| Capability | native (eshttp.dll) | cli pipe (eshttp-ipc.dll + worker) | cli oneshot (job-file) | socket (ES3) |
+| Capability | native (eshttp.dll) — **opt-in** | cli pipe (eshttp-ipc.dll + worker) — **default** | cli oneshot (job-file) | socket (ES3) |
 |---|---|---|---|---|
 | `http://` | yes | yes | yes | yes |
 | `https://` | yes (TLS 1.2+) | yes (same engine, warm session) | yes (same engine) | no → `"unsupported"` |
@@ -421,6 +461,13 @@ The full 14-code table is in `docs/api-spec.md` §7.
 | Connection reuse | yes (WinHTTP) | **yes (warm pool, zero spawn)** | no (one process per request) | no |
 | **Firewall-escape** (per-app outbound block) | no | **yes** (kernel IPC — not network traffic) | **yes** (child image) | no |
 | `meta.encodingWasApplied` / `backend` | yes | `null` | `null` | `null` |
+
+**Default vs opt-in (v1.0.1):** the **cli pipe lane is the default**
+(auto-selection reaches it first whenever the worker is available);
+**native is opt-in** — auto reaches it only when the cli lane is
+unavailable/dead AND the separate native accel/DLL is staged, or when you
+call `forceTransport("native")` explicitly. The oneshot lane is the cli
+tier's internal degradation; socket is the no-binaries fallback.
 
 ### The firewall-escape transport (`cli`)
 
@@ -448,7 +495,8 @@ Two cli lanes (both firewall-safe):
   path — `File.execute()` with `ESHTTP_*.job` → envelope → `.done`, one
   process per request. Used when the pipe lane cannot start.
 
-Degradation ladder: **native → cli(pipe) → cli-oneshot → socket → none**.
+Degradation ladder (v1.0.1): **cli(pipe) → cli-oneshot → native(opt-in) →
+socket → none**.
 
 Verified live (Illustrator 30.6.0, all firewall rules enabled, none
 modified): the one-shot lane fetched Wikipedia's W SVG through the firewall
@@ -510,7 +558,7 @@ figures are dominated by the transport boundary:
 - **Native DLL lane**: WinHTTP round-trip ≈ host-native cost; the dominant
   JS cost is envelope JSON parse/serialize (ESON, DLL-accelerated when
   loadable).
-- **Cli pipe lane (v1, primary)**: a persistent `eshttp-cli.exe --worker`
+- **Cli pipe lane (v1.0.1, default)**: a persistent `eshttp-cli.exe --worker`
   process keeps the WinHTTP session + connection pool + TLS cache warm across
   requests (true keep-alive; the per-request spawn cost of the one-shot path
   is amortized to zero). Measured wrapper-transport overhead (T21,
@@ -519,8 +567,15 @@ figures are dominated by the transport boundary:
   **oneshot (job-file): median 2.819 ms, p95 3.413 ms, sd 0.350 ms (n=10)**
   — ~44x pipe/oneshot (same-run pair); pipe cold-with-spawn (ensureWorker
   included) 0.260 ms, warming to 0.064 ms (spawn-amortization evidence).
-  Env: node v22.23.2 win32 x64. The full release-gate number (real-pipe warm
-  fetch vs one-shot in the host) is reported at the T21 gate.
+  Env: node v22.23.2 win32 x64.
+- **Cli pipe vs native-DLL (T25, driver-level head-to-head):** pipe median
+  0.071–0.078 ms vs native-DLL 0.084–0.141 ms (ratio 0.55–0.87x, N=10 warm
+  5, 3 runs, both fake responders, same harness). **At the wrapper level the
+  pipe lane is at parity with, or marginally cheaper than, the in-process
+  ExternalObject boundary — both sub-0.15 ms, so real-world comparisons are
+  network-dominated, not transport-selected.** The real-DLL vs real-pipe live
+  comparison is unverified-live (no firewall window per sponsor; no
+  fabricated numbers).
 - **Cli oneshot lane (degradation)**: measured live — done-poll ~400 ms for
   a complete HTTPS fetch of a 2440-byte SVG (WinHTTP connect/TLS + process
   spawn + job-file round trip) — see `test/QA-VALIDATION.md`.

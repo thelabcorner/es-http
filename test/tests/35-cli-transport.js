@@ -7,7 +7,11 @@
  * network even when the host firewall blocks Illustrator.exe outbound. It is
  * the https-capable fallback when the native DLL is dead/unavailable.
  *
- * Tier order (additive): auto -> native -> cli -> socket -> none.
+ * Tier order (additive, T24): auto -> cli (pipe primary) -> native (opt-in,
+ * DLL staged) -> socket -> none. The cli tier is the firewall-escape PRIMARY
+ * — auto prefers the pipe whenever the worker/EXE can run; native (in-process
+ * WinHTTP DLL) is reached only when cli is unavailable/dead AND the separate
+ * native accel is staged, or via forceTransport('native').
  * Public surface additions: transportInfo().transport gains "cli";
  * result.meta.path gains "cli". The cli lane's meta carries
  * encodingWasApplied/backend = null (native-only fields, api-spec §3).
@@ -28,25 +32,25 @@ module.exports = function (suite, env) {
     const EQ = env.assertEq;
 
     // =====================================================================
-    // Q10 — tier order includes cli (native -> cli -> socket -> none)
+    // Q10 — tier order (T24: cli pipe-primary -> native opt-in -> socket)
     // =====================================================================
-    suite.test("Q10 cli tier order: native > cli > socket > none", function () {
-        // All present -> auto = native
+    suite.test("Q10 cli tier order: cli > native > socket > none (pipe-primary)", function () {
+        // All present -> auto = cli (pipe is the primary)
         env.controls.setExternalObjectAvailable(true);
         env.controls.setSocketAvailable(true);
         env.controls.setCliAvailable(true);
         eshttp.resetTransport();
-        EQ(eshttp.forceTransport("auto"), "native", "auto with all three -> native");
+        EQ(eshttp.forceTransport("auto"), "cli", "auto with all three -> cli (pipe-primary)");
 
-        // ExternalObject gone -> auto = cli (the https-capable fallback)
-        env.controls.setExternalObjectAvailable(false);
-        eshttp.resetTransport();
-        EQ(eshttp.forceTransport("auto"), "cli", "auto without native -> cli");
-
-        // ExternalObject + cli gone -> socket
+        // cli gone -> auto = native (opt-in: DLL staged + probe succeeds)
         env.controls.setCliAvailable(false);
         eshttp.resetTransport();
-        EQ(eshttp.forceTransport("auto"), "socket", "auto without native+cli -> socket");
+        EQ(eshttp.forceTransport("auto"), "native", "auto without cli -> native (DLL staged)");
+
+        // cli + native gone -> socket
+        env.controls.setExternalObjectAvailable(false);
+        eshttp.resetTransport();
+        EQ(eshttp.forceTransport("auto"), "socket", "auto without cli+native -> socket");
 
         // none left -> none
         env.controls.setSocketAvailable(false);

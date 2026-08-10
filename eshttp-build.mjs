@@ -49,7 +49,7 @@
 // `eshttp.request(...)`, `eshttp.transport`, `eshttp.DEFAULTS` and
 // `eshttp.__noNetwork = true` all behave identically to the jsxinc.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -354,16 +354,27 @@ function stageCliExe() {
 }
 stageCliExe();
 
-// 6. Release accel bundle (T14, espack 0.4.0 kind=file/dll payloads): compose
-//    dist/eshttp.accel.jsx - ONE self-extracting single file = the ESPACK
-//    bundle (eshttp-cli.exe kind=file + eshttp-x64.dll kind=dll payloads, 1+n
-//    shared-accelerator model) + the eshttp library IIFE + the staging adapter
-//    that materializes the payloads to %LOCALAPPDATA%\eshttp (findCliExe's
-//    FIRST candidate + the lib:eshttp search path). Mirrors the sibling
-//    ESON.accel.jsx/ESB64.accel.jsx composition (espack bundle + facade +
-//    adapter, merged pre-minify; minification not required for v1).
-//    Missing inputs -> loud skip (sibling pattern); present -> always built.
-var ACCELERATOR = [
+// 6. Release accel bundles (T23, v1.0.1 packaging restructure, per the
+//    sponsor architecture decision): PIPE-PRIMARY packaging with NO dead
+//    payloads and the native DLL as a separate opt-in build.
+//      dist/eshttp.accel-x64.jsx  - cli x64 worker + ipc-x64 bridge ONLY
+//      dist/eshttp.accel-x86.jsx  - cli-x86 worker + ipc-x86 bridge ONLY
+//      dist/eshttp-native-accel.jsx - eshttp-x64.dll (WinHTTP wrapper) opt-in
+//      dist/eshttp-native-accel-x86.jsx - eshttp-x86.dll (legacy hosts)
+//    The 4-payload eshttp.accel.jsx is RETIRED (removed). Each pipe accel is
+//    espack 1+n (shared ESB64Native accelerator) + the library IIFE + a
+//    staging adapter that materializes the payloads to %LOCALAPPDATA%\eshttp
+//    (findCliExe's FIRST candidate + the bridge path) with the CORRECT
+//    bitness (canonical target names unchanged, so the driver needs zero
+//    path changes). The native accel additionally prepends the staged dir to
+//    ExternalObject.searchFolders so lib:eshttp resolves the in-process DLL.
+//    Skill-cited design: externalobject-extendscript 'Load from JSX'
+//    (searchFolders prepend + lib:Name resolution) and 'Additional host
+//    observations' (a bitness mismatch fails cleanly - so each accel carries
+//    ONE bitness; a host loads only its own). adobe-illustrator-scripting
+//    §11 (ES3 output discipline) + §12 (bundle to one .jsx) + §14 (honest
+//    packaging - no unmeasured claims).
+var ACCEL_ADAPTER_COMMON = [
   '// eshttp accel adapter (espack kind=file/dll payload staging) - ES3, never throws.',
   '(function () {',
   '  if (typeof ESPAK !== "object" || !ESPAK || typeof ESPAK.extract !== "function") return;',
@@ -411,51 +422,97 @@ var ACCELERATOR = [
   '      return ok;',
   '    } catch (e9) { return false; }',
   '  }',
-  '  stage(0, "eshttp-cli.exe");',
-  '  stage(1, "eshttp-ipc.dll");',
-  '  stage(2, "eshttp-ipc-x86.dll");',
-  '  stage(3, "eshttp.dll");',
-  '  try {',
-  '    if (typeof ExternalObject !== "undefined" && ExternalObject.searchFolders) {',
-  '      ExternalObject.searchFolders = stageDir + ";" + ExternalObject.searchFolders;',
-  '    }',
-  '  } catch (e10) {}',
-  '  if (g) { try { g.ESPAK = ESPAK; } catch (e11) {} }',
-  '}());',
   ''
 ].join('\n');
 
-function buildAccel() {
+function accelAdapter(stageCalls) {
+  var lines = [ACCEL_ADAPTER_COMMON];
+  for (var i = 0; i < stageCalls.length; i++) {
+    lines.push('  stage(' + stageCalls[i].idx + ', "' + stageCalls[i].target + '");');
+  }
+  lines.push('  try {',
+    '    if (typeof ExternalObject !== "undefined" && ExternalObject.searchFolders) {',
+    '      ExternalObject.searchFolders = stageDir + ";" + ExternalObject.searchFolders;',
+    '    }',
+    '  } catch (e10) {}',
+    '  if (g) { try { g.ESPAK = ESPAK; } catch (e11) {} }',
+    '}());',
+    '');
+  return lines.join('\n');
+}
+
+function buildAccelBundle(name, embeds, stageCalls, banner) {
   var espackBuild = join(ROOT, '..', 'espack', 'espack-build.mjs');
-  var cli = join(ROOT, 'native', 'eshttp-cli.exe');          /* worker, kind=file */
-  var ipcX64 = join(ROOT, 'native', 'eshttp-ipc-x64.dll');   /* bridge, kind=dll */
-  var ipcX86 = join(ROOT, 'native', 'eshttp-ipc-x86.dll');   /* bridge x86, kind=dll */
-  var dll = join(ROOT, 'native', 'eshttp-x64.dll');          /* native accel, kind=dll */
   var facade = join(DIST, 'eshttp.jsx');
   var missing = [];
-  if (!existsSync(espackBuild)) { missing.push('espack-build.mjs (sibling espack repo at ' + join(ROOT, '..', 'espack') + ')'); }
-  if (!existsSync(cli)) { missing.push('native/eshttp-cli.exe (build via the native lane)'); }
-  if (!existsSync(ipcX64)) { missing.push('native/eshttp-ipc-x64.dll (T18 bridge build)'); }
-  if (!existsSync(ipcX86)) { missing.push('native/eshttp-ipc-x86.dll (T18 bridge build)'); }
-  if (!existsSync(dll)) { missing.push('native/eshttp-x64.dll (build via the native lane)'); }
+  if (!existsSync(espackBuild)) { missing.push('espack-build.mjs (sibling espack repo)'); }
   if (!existsSync(facade)) { missing.push('dist/eshttp.jsx (esbuild step must run first)'); }
+  for (var e = 0; e < embeds.length; e++) {
+    if (!existsSync(embeds[e].path)) { missing.push(embeds[e].path); }
+  }
   if (missing.length > 0) {
-    console.log('[eshttp-build] accel bundle skipped - missing: ' + missing.join(', '));
+    console.log('[eshttp-build] ' + name + ' skipped - missing: ' + missing.join(', '));
     return;
   }
   var tmpBundle = join(DIST, '.eshttp-accel-bundle.jsx');
-  execFileSync(process.execPath, [espackBuild, '--embed', cli, '--embed', ipcX64,
-    '--embed', ipcX86, '--embed', dll,
-    '--out', tmpBundle, '--name', 'eshttp', '--quiet'], { stdio: 'inherit' });
+  var args = [espackBuild];
+  for (var e2 = 0; e2 < embeds.length; e2++) { args.push('--embed', embeds[e2].path); }
+  args.push('--out', tmpBundle, '--name', 'eshttp', '--quiet');
+  execFileSync(process.execPath, args, { stdio: 'inherit' });
   var bundleText = readFileSync(tmpBundle, 'utf8');
   var facadeText = readFileSync(facade, 'utf8');
-  var accelOut = '// eshttp.accel.jsx - self-extracting single-file bundle (espack 1+n: ' +
-    'eshttp-cli.exe worker + eshttp-ipc.dll/x86 bridge + eshttp.dll payloads + eshttp library + staging adapter)\n' +
-    bundleText + '\n' + facadeText + '\n' + ACCELERATOR;
-  writeFileSync(join(DIST, 'eshttp.accel.jsx'), accelOut);
-  console.log('[eshttp-build] wrote ' + join(DIST, 'eshttp.accel.jsx') + ' (' + accelOut.length + ' bytes)');
+  var adapter = accelAdapter(stageCalls);
+  var accelOut = banner + bundleText + '\n' + facadeText + '\n' + adapter;
+  writeFileSync(join(DIST, name), accelOut);
+  console.log('[eshttp-build] wrote ' + join(DIST, name) + ' (' + accelOut.length + ' bytes)');
 }
-buildAccel();
+
+// Default pipe accels: ONE bitness each, NO native DLL payloads.
+buildAccelBundle('eshttp.accel-x64.jsx',
+  [
+    { path: join(ROOT, 'native', 'eshttp-cli.exe') },
+    { path: join(ROOT, 'native', 'eshttp-ipc-x64.dll') }
+  ],
+  [
+    { idx: 0, target: 'eshttp-cli.exe' },
+    { idx: 1, target: 'eshttp-ipc.dll' }
+  ],
+  '// eshttp.accel-x64.jsx - pipe-primary self-extracting bundle (x64: eshttp-cli.exe worker + eshttp-ipc.dll bridge; NO native DLL - that is the separate opt-in native accel)\n');
+
+buildAccelBundle('eshttp.accel-x86.jsx',
+  [
+    { path: join(ROOT, 'native', 'eshttp-cli-x86.exe') },
+    { path: join(ROOT, 'native', 'eshttp-ipc-x86.dll') }
+  ],
+  [
+    { idx: 0, target: 'eshttp-cli.exe' },
+    { idx: 1, target: 'eshttp-ipc.dll' }
+  ],
+  '// eshttp.accel-x86.jsx - pipe-primary self-extracting bundle (x86: eshttp-cli.exe worker + eshttp-ipc.dll bridge for legacy 32-bit hosts)\n');
+
+// Native opt-in accel: the in-process WinHTTP wrapper DLL lane (separate per
+// the sponsor decision - non-firewalled hosts wanting in-process native).
+buildAccelBundle('eshttp-native-accel.jsx',
+  [
+    { path: join(ROOT, 'native', 'eshttp-x64.dll') }
+  ],
+  [
+    { idx: 0, target: 'eshttp.dll' }
+  ],
+  '// eshttp-native-accel.jsx - OPT-IN WinHTTP wrapper DLL accel (x64). Eval AFTER the default pipe accel to enable the in-process native lane (lib:eshttp) on non-firewalled hosts; the pipe lane remains the default transport.\n');
+
+buildAccelBundle('eshttp-native-accel-x86.jsx',
+  [
+    { path: join(ROOT, 'native', 'eshttp-x86.dll') }
+  ],
+  [
+    { idx: 0, target: 'eshttp.dll' }
+  ],
+  '// eshttp-native-accel-x86.jsx - OPT-IN WinHTTP wrapper DLL accel (x86, legacy hosts).\n');
+
+// Retire the 4-payload monolith (v1.0.0 accel): remove it if present.
+try { rmSync(join(DIST, 'eshttp.accel.jsx'), { force: true }); } catch (rmErr) {}
+console.log('[eshttp-build] retired dist/eshttp.accel.jsx (4-payload monolith) - per-bitness accels + native opt-in accels produced instead');
 
 function verifyEs3Output(path, text, payloads) {
   var problems = 0;

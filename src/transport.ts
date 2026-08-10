@@ -1,19 +1,23 @@
 // ESHTTP transport resolution (ported from src/eshttp.jsxinc L1931–1963;
-// api-spec §9 / assignment tier rules; T9 cli tier).
+// api-spec §9 / assignment tier rules; T9 cli tier; T24 pipe-primary).
 //
 // Resolves the active transport name: "native" | "cli" | "socket" | "none".
 // Precedence: forced transport ("auto"|"native"|"cli"|"socket") -> defaults
 // -> probe. `__noNetwork` short-circuits to "none". Updates the module
 // state's _currentTransport (the live `eshttp.transport` getter reads it).
 //
-// TIER ORDER (auto) — native -> cli -> socket -> none. Rationale (T9
-// decision): native (eshttp.dll, in-process) is the canonical fast path when
-// it works. cli (eshttp-cli.exe, separate process) is the firewall-escape
-// native-equivalent AND the only https-capable fallback when native is dead
-// (socket is cleartext-only — the old dllDead+https path returned
-// "unsupported"; cli now fills that gap). socket is the pure-ES3 cleartext
-// fallback. When a tier is unavailable (native: DLL probe fail; cli: exe
-// missing / session-dead; socket: no Socket object) auto skips it.
+// TIER ORDER (auto) — cli(pipe) -> native -> socket -> none. Rationale
+// (T24 sponsor decision, v1.0.1): the cli pipe is the firewall-escape
+// PRIMARY — eshttp-cli.exe is a separate process image (not matched by the
+// host firewall), https-capable (same engine as the DLL), and keeps a warm
+// persistent worker (no per-request spawn). The in-process WinHTTP DLL
+// (native) becomes an OPT-IN tier: auto reaches it only when the pipe is
+// unavailable/dead AND the separate native accel/DLL is staged (probe
+// succeeds). forceTransport("native") remains the explicit opt-in that
+// forces native even when the pipe is fine. socket is the pure-ES3
+// cleartext fallback. When a tier is unavailable (cli: exe missing /
+// session-dead; native: DLL not staged / probe fail / dead; socket: no
+// Socket object) auto skips it.
 import { _forcedTransport, _defaults, noNetwork, setCurrentTransport } from './state';
 import { probeNative } from './driver-native';
 import { cliAvailable, cliPresent } from './driver-cli';
@@ -51,17 +55,22 @@ export function resolveTransport(forceName?: string): string {
     setCurrentTransport(tSocket);
     return tSocket;
   }
-  // auto: native -> cli -> socket -> none
-  var cache = probeNative();
+  // auto: cli(pipe) -> native (opt-in, DLL staged) -> socket -> none
+  // (T24: pipe-primary — the cli tier wins whenever the exe is available;
+  // native is reached only when cli is unavailable/dead AND the separate
+  // native accel/DLL is staged. forceTransport('native') bypasses all this.)
   var t: string;
-  if (cache.accel && cache.available && !cache.dead) {
-    t = "native";
-  } else if (cliAvailable()) {
+  if (cliAvailable()) {
     t = "cli";
-  } else if (socketAvailable()) {
-    t = "socket";
   } else {
-    t = "none";
+    var cache = probeNative();
+    if (cache.accel && cache.available && !cache.dead) {
+      t = "native";
+    } else if (socketAvailable()) {
+      t = "socket";
+    } else {
+      t = "none";
+    }
   }
   setCurrentTransport(t);
   return t;
