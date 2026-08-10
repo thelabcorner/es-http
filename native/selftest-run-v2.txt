@@ -1,0 +1,244 @@
+=== native/selftest.c ΓÇö eshttp native selftest (ESHTTP_STATIC) ===
+ABI: http-v1  version: 1.0.0
+
+[version] eshttp_version(0)
+  PASS  eshttp_version(0) returns kESErrOK
+  PASS    eshttp_version(0) returns kTypeString
+  PASS    eshttp_version(0) == "1.0.0"
+  PASS  ESHTTP_VERSION == "1.0.0"
+[available] eshttp_available(0)
+  PASS  eshttp_available(0) returns kESErrOK
+  PASS    eshttp_available(0) returns kTypeInteger
+  PASS    eshttp_available(0) == 1 (WinHTTP backend inits)
+[es] ES* lifecycle exports (native-abi v2)
+  PASS  ESGetVersion() == 1
+  PASS    ESInitialize lists eshttp_request_sssss
+  PASS    ESInitialize lists eshttp_last_error_f
+  PASS    ESInitialize lists eshttp_version_f
+  PASS    ESInitialize lists eshttp_available_f
+  PASS    ESInitialize does NOT list eshttp_free (v2 removes it)
+  PASS  ESFreeMem(NULL)/ESTerminate() callable (no crash)
+[abi] eshttp_request direct-interface shape
+  PASS    eshttp_request(1 arg) -> kESErrBadArgumentList
+  PASS    eshttp_request(non-string arg) -> kESErrBadArgumentList
+[hooks] ESHTTP_SELFTEST hooks
+  PASS  ci_eq("Host","host") == 1
+  PASS  ci_eq("abc","abd") == 0
+  PASS  b64_encode("hello") == "aGVsbG8="
+  PASS  b64_decode("aGVsbG8=") == "hello"
+  PASS  b64_decode rejects bad input (len not % 4)
+  PASS  b64_decode rejects bad input (invalid chars)
+  PASS  utf8_decode('A') == 65
+  PASS  utf8_decode(0xC3 0xA9) == U+00E9
+  PASS  utf8_fix invalid byte -> U+FFFD
+  PASS  url_parse strips userinfo, lowercases host, drops fragment
+  PASS  url_tostring sanitized (no userinfo)
+  PASS  url_parse rejects ftp://
+  PASS  url_resolve("../c")
+  PASS  url_resolve("/x?y=1")
+  PASS  url_resolve(absolute)
+  PASS  map_winhttp(12007) == dns
+  PASS  map_winhttp(12002) == timeout
+  PASS  map_winhttp(unknown) == internal
+  PASS  headers: content-type parsed
+  PASS  headers: repeated joined ", "
+  PASS  headers: Set-Cookie joined "; "
+  PASS  is_method_token("GET")
+  PASS  is_method_token rejects space
+  PASS  is_method_token rejects empty
+  PASS  auth stripped on https->http same-host downgrade
+  PASS  non-auth headers kept on downgrade
+  PASS  auth kept on same-scheme same-host hop
+  PASS  auth stripped on cross-host redirect (same scheme)
+[envelope] error-shaped envelopes carry abi + ok:false + status:0
+  PASS  bad-method request returns envelope (not NULL)
+  PASS    invalid-args envelope has abi http-v1
+  PASS    invalid-args: ok:false, status:0
+  PASS    invalid-args: error.code invalid-args
+  PASS  bad-scheme request returns envelope
+  PASS    bad-url envelope has abi http-v1
+  PASS    bad-url: ok:false, status:0
+  PASS    bad-url: error.code bad-url
+  PASS  CRLF-header request returns envelope
+  PASS    invalid-header envelope has abi http-v1
+  PASS    invalid-header: error.code invalid-header
+  PASS    invalid-header: ok:false, status:0
+  PASS  bad-base64 request returns envelope
+  PASS    bad-base64 envelope has abi http-v1
+  PASS    bad-base64: error.code invalid-args
+  PASS  CRLF-userAgent request returns envelope
+  PASS    userAgent CR/LF -> invalid-args (header-injection guard)
+  PASS  CRLF-URL request returns envelope
+  PASS    URL CR/LF -> bad-url (request-line injection guard)
+
+[server] loopback listener on 127.0.0.1/127.0.0.2:5694
+[envelope] transport error: connect to a closed loopback port
+  PASS  obtained a closed loopback port
+  PASS  transport-failure request returns envelope (not NULL)
+  PASS    error envelope has abi http-v1
+  PASS    error envelope: ok:false, status:0
+  PASS    error envelope: error != null
+  PASS    error envelope: error.code == connect
+  PASS    error envelope freed via ESFreeMem (no crash)
+[envelope] 4xx/5xx are NORMAL envelopes (ok:true, error:null)
+  PASS  404 request returns envelope
+  PASS    404 envelope has abi http-v1
+  PASS    404: ok:true, status:404
+  PASS    404: error:null (response was received)
+  PASS    404: bodyEncoding utf8
+  PASS  500 request returns envelope
+  PASS    500: ok:true, status:500
+  PASS    500: error:null
+  PASS    500: meta.redirects == 0
+[headers] caller Host/Content-Length ignored (DLL computes)
+  PASS  POST /echo ok
+  PASS  wire capture present
+  PASS    wire Host == real 127.0.0.1:port
+  PASS    wire has NO attacker Host
+  PASS    wire Content-Length == 5 (body length)
+  PASS    wire has NO caller Content-Length 999
+  PASS    caller X-Probe survives
+    --- POST /echo (capture 2, 137 bytes) ---
+POST /echo HTTP/1.1\r\n
+Connection: Keep-Alive\r\n
+Accept-Encoding: gzip, deflate\r\n
+X-Probe: 1\r\n
+Content-Length: 5\r\n
+Host: 127.0.0.1:5694\r\n
+\r\n
+hello
+[body] bodyIsBase64 decoded before send; Content-Length on decoded length
+  PASS  POST /echo (b64 body) ok
+  PASS  wire capture present
+  PASS    wire Content-Length == 11 (decoded len)
+  PASS    wire body == decoded "hello world"
+  PASS    wire body is NOT the raw base64
+    --- POST /echo b64 (capture 3, 132 bytes) ---
+POST /echo HTTP/1.1\r\n
+Connection: Keep-Alive\r\n
+Accept-Encoding: gzip, deflate\r\n
+Content-Length: 11\r\n
+Host: 127.0.0.1:5694\r\n
+\r\n
+hello world
+[redirect] 301/302/303 -> GET + body dropped
+  PASS    301: follow ok
+  PASS    301: meta.redirects == 1
+  PASS    301: meta.finalUrl == /echo (after redirect)
+  PASS    301: two wire hops captured
+  PASS    301: hop1 POST with body
+  PASS    301: hop2 is GET (converted)
+  PASS    301: hop2 body dropped
+  PASS    301: hop2 Content-Type dropped
+  PASS    302: follow ok
+  PASS    302: meta.redirects == 1
+  PASS    302: meta.finalUrl == /echo (after redirect)
+  PASS    302: two wire hops captured
+  PASS    302: hop1 POST with body
+  PASS    302: hop2 is GET (converted)
+  PASS    302: hop2 body dropped
+  PASS    302: hop2 Content-Type dropped
+  PASS    303: follow ok
+  PASS    303: meta.redirects == 1
+  PASS    303: meta.finalUrl == /echo (after redirect)
+  PASS    303: two wire hops captured
+  PASS    303: hop1 POST with body
+  PASS    303: hop2 is GET (converted)
+  PASS    303: hop2 body dropped
+  PASS    303: hop2 Content-Type dropped
+[redirect] 307/308 preserve method + body
+  PASS    307: follow ok
+  PASS    307: hop2 captured
+  PASS    307: hop2 still POST
+  PASS    307: hop2 body preserved
+  PASS    307: hop2 Content-Length 6
+  PASS    308: follow ok
+  PASS    308: hop2 captured
+  PASS    308: hop2 still POST
+  PASS    308: hop2 body preserved
+  PASS    308: hop2 Content-Length 6
+[redirect] Authorization dropped on cross-host, kept same-host
+  PASS  cross-host follow ok, redirects==1
+  PASS  cross-host hop2 captured
+  PASS    hop2 has NO Authorization (dropped)
+  PASS    hop2 has NO credential bytes
+    --- cross-host hop2 (capture 15, 100 bytes) ---
+GET /echo HTTP/1.1\r\n
+Connection: Keep-Alive\r\n
+Accept-Encoding: gzip, deflate\r\n
+Host: 127.0.0.2:5694\r\n
+\r\n
+
+  PASS  same-host follow ok
+  PASS  same-host hop2 captured
+  PASS    hop2 KEEPS Authorization
+[redirect] manual: 3xx returned as-is, no follow
+  PASS  manual: ok:true, status:302
+  PASS  manual: meta.redirects == 0
+  PASS  manual: error:null
+  PASS  manual: finalUrl == original URL
+[redirect] maxRedirects cap -> too-many-redirects error envelope
+  PASS  loop request returns envelope
+  PASS    too-many-redirects envelope has abi http-v1
+  PASS    ok:false, status:0 (┬º4.3: error iff no usable response)
+  PASS    error.code == too-many-redirects
+  PASS    meta.redirects == 1 (capped at maxRedirects)
+[redirect] relative Location resolved in C (native-abi ┬º10 notes)
+  PASS  relative ../echo redirect followed
+  PASS    hop2 resolved to /echo
+[sniff] text/binary + NUL guard (native-abi ┬º4.1)
+  PASS  text/plain body ok
+  PASS    text/plain -> bodyEncoding utf8
+  PASS    meta.backend == winhttp
+  PASS    meta.nativeVersion == 1.0.0
+  PASS  binary body ok
+  PASS    application/octet-stream -> base64
+  PASS    body == base64(00 01 02 FF 10)
+  PASS  NUL-guard body ok
+  PASS    text/plain WITH NUL -> base64 (NUL guard)
+  PASS    body == base64(A NUL B)
+[wire R-G5-E1] User-Agent: normal case sends exactly one
+  PASS  GET /echo with userAgent ok
+  PASS  wire capture present
+  PASS    wire carries the caller's User-Agent value
+    [info] 'user-agent' occurrences on wire: 1
+  PASS    exactly ONE User-Agent header on the wire
+    --- UA normal (capture 26, 133 bytes) ---
+GET /echo HTTP/1.1\r\n
+Connection: Keep-Alive\r\n
+Accept-Encoding: gzip, deflate\r\n
+User-Agent: native-selftest/9.9\r\n
+Host: 127.0.0.1:5694\r\n
+\r\n
+
+[wire R-G5-E1] User-Agent: suppressed (userAgent:null) -> ZERO UA bytes
+  PASS  GET /echo with userAgent:null ok
+  PASS  wire capture present
+    [info] 'user-agent' occurrences on wire: 0
+  PASS    ZERO 'user-agent' bytes on the wire (api-spec ┬º6.2 row 4)
+  PASS    no default 'eshttp/1.0.0' leak
+    --- UA suppressed (capture 27, 100 bytes) ---
+GET /echo HTTP/1.1\r\n
+Connection: Keep-Alive\r\n
+Accept-Encoding: gzip, deflate\r\n
+Host: 127.0.0.1:5694\r\n
+\r\n
+
+[wire R-G5-E1] User-Agent: explicit header wins, no session-agent leak
+  PASS  GET /echo with explicit UA header ok
+  PASS  wire capture present
+  PASS    wire carries the explicit caller header value
+    [info] 'user-agent' occurrences on wire: 1
+  PASS    exactly ONE User-Agent on the wire (explicit wins)
+  PASS    opts.userAgent does NOT leak when a header won
+    --- UA header-wins (capture 28, 130 bytes) ---
+GET /echo HTTP/1.1\r\n
+Connection: Keep-Alive\r\n
+Accept-Encoding: gzip, deflate\r\n
+User-Agent: explicit-agent/7\r\n
+Host: 127.0.0.1:5694\r\n
+\r\n
+
+
+=== RESULT: 166 pass, 0 fail ===
+ALL GREEN ΓÇö t1 native gate items satisfied.

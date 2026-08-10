@@ -1,0 +1,1239 @@
+/*
+ * eshttp.jsxinc — ES3 ExtendScript HTTP client for Adobe hosts.
+ * Version: 1.0.0
+ * Contract: contracts/http-api-v1 (eshttp/docs/api-spec.md)
+ * ABI:     contracts/native-abi-v1 (eshttp/docs/native-abi.md)
+ *
+ * Single self-contained ES3 file. Exposes ONE global: `eshttp` on $.global.
+ * Never throws for I/O or validation failures — always returns a Result
+ * (see api-spec.md section 3).
+ *
+ * Transport tiers (auto, in order):
+ *   1. native — espack.dll via new ExternalObject("lib:espack") (WinHTTP)
+ *   2. socket — ExtendScript Socket object (cleartext HTTP/1.1 only)
+ *   3. none   — every call returns error {code:"unsupported"}
+ *
+ * ES3 constraints honored: var/function only, no ES5+ syntax, no reliance
+ * on Array.prototype.map/filter/forEach/indexOf, no JSON global (embedded
+ * parser below), no trailing commas, own iteration loops everywhere.
+ */
+(function (global) {
+    "use strict"; /* harmless; honored but not required */
+
+    /* ===================================================================
+     * 1. Constants & mutable state
+     * =================================================================== */
+    var _VERSION = "1.0.0";
+    var _ABI = "http-v1";          /* response-envelope ABI marker (native-abi.md s4) */
+
+    var _DEFAULTS = {
+        timeout: 30000,
+        redirect: "follow",        /* "follow" | "manual" */
+        maxRedirects: 5,
+        verifyTls: true,
+        userAgent: "eshttp/" + _VERSION,
+        decompress: true,
+        maxBodyBytes: 52428800,    /* 50 MiB */
+        transport: "auto"          /* "auto" | "native" | "socket" */
+    };
+    var _defaultsSnapshot = null;  /* refreshed by configure(); eshttp.DEFAULTS */
+
+    var _forceTransport = "auto";  /* overrides _DEFAULTS.transport */
+    var _transport = null;         /* cached active transport: "native"|"socket"|"none" */
+    var _accel = null;             /* cached ExternalObject("lib:espack") or null */
+    var _accelDead = false;        /* set when a loaded DLL fails ABI check */
+    var _nativeVersion = null;
+
+    var _hostName = null;          /* cached app.name */
+    var _platform = null;          /* cached $.os-derived platform */
+
+    /* Public taxonomy constants (api-spec.md s7). Value == code string. */
+    var _CODES = [
+        "invalid-args", "bad-url", "invalid-header", "unsupported",
+        "dns", "connect", "network", "tls", "timeout", "aborted",
+        "too-many-redirects", "body-too-large", "invalid-json", "internal"
+    ];
+
+    /* code -> {category, retryable} lookup */
+    var _ERR = {};
+    _ERR["invalid-args"] = { c: "usage", r: false };
+    _ERR["bad-url"] = { c: "usage", r: false };
+    _ERR["invalid-header"] = { c: "usage", r: false };
+    _ERR["unsupported"] = { c: "usage", r: false };
+    _ERR["dns"] = { c: "transport", r: true };
+    _ERR["connect"] = { c: "transport", r: true };
+    _ERR["network"] = { c: "transport", r: true };
+    _ERR["tls"] = { c: "tls", r: false };
+    _ERR["timeout"] = { c: "timeout", r: true };
+    _ERR["aborted"] = { c: "abort", r: false };
+    _ERR["too-many-redirects"] = { c: "protocol", r: false };
+    _ERR["body-too-large"] = { c: "protocol", r: false };
+    _ERR["invalid-json"] = { c: "protocol", r: false };
+    _ERR["internal"] = { c: "internal", r: false };
+
+    var _errConsts = {};
+    _errConsts.INVALID_ARGS = "invalid-args";
+    _errConsts.BAD_URL = "bad-url";
+    _errConsts.INVALID_HEADER = "invalid-header";
+    _errConsts.UNSUPPORTED = "unsupported";
+    _errConsts.DNS = "dns";
+    _errConsts.CONNECT = "connect";
+    _errConsts.NETWORK = "network";
+    _errConsts.TLS = "tls";
+    _errConsts.TIMEOUT = "timeout";
+    _errConsts.ABORTED = "aborted";
+    _errConsts.TOO_MANY_REDIRECTS = "too-many-redirects";
+    _errConsts.BODY_TOO_LARGE = "body-too-large";
+    _errConsts.INVALID_JSON = "invalid-json";
+    _errConsts.INTERNAL = "internal";
+
+    /* ===================================================================
+     * 2. Tiny ES3 helpers (no reliance on host Array/String extras)
+     * =================================================================== */
+    function isArray(v) {
+        return Object.prototype.toString.call(v) === "[object Array]";
+    }
+    function isObj(v) {
+        return v !== null && typeof v === "object" && !isArray(v);
+    }
+    function ownKeys(o) {
+        var out = [], k;
+        for (k in o) {
+            if (Object.prototype.hasOwnProperty.call(o, k)) { out.push(k); }
+        }
+        return out;
+    }
+    function hasKey(o, k) {
+        return Object.prototype.hasOwnProperty.call(o, k);
+    }
+    function trim(s) {
+        return String(s).replace(/^\s+|\s+$/g, "");
+    }
+    function lower(s) {
+        return String(s).toLowerCase();
+    }
+    function indexOf(a, x) {
+        var i;
+        for (i = 0; i < a.length; i++) { if (a[i] === x) { return i; } }
+        return -1;
+    }
+    function now() {
+        return new Date().getTime();
+    }
+    function copyObj(src) {
+        var out = {}, k;
+        for (k in src) { if (hasKey(src, k)) { out[k] = src[k]; } }
+        return out;
+    }
+    /* RFC 3986 unreserved + sub-delims kept; used by native-ABI boundary is
+       not affected — this is only for query/percent-encoding of user data. */
+    function encComp(s) {
+        var out = "", i, c, hex;
+        s = String(s);
+        for (i = 0; i < s.length; i++) {
+            c = s.charCodeAt(i);
+            if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+                c === 45 || c === 46 || c === 95 || c === 126) {
+                out += s.charAt(i);
+            } else if (c < 128) {
+                hex = c.toString(16);
+                out += "%" + (hex.length < 2 ? "0" : "") + hex.toUpperCase();
+            } else {
+                /* UTF-8 encode multi-byte char */
+                out += encUtf8Byte(c);
+            }
+        }
+        return out;
+    }
+    function encUtf8Byte(c) {
+        /* encode a code unit > 0x7F to %XX UTF-8 bytes (handles BMP; surrogate
+           pairs come through as two 3-byte sequences — acceptable v1). */
+        var b1, b2, b3, s = "";
+        if (c < 0x800) {
+            b1 = 0xC0 | (c >> 6); b2 = 0x80 | (c & 0x3F);
+            s = "%" + pad2(b1.toString(16)) + "%" + pad2(b2.toString(16));
+        } else {
+            b1 = 0xE0 | (c >> 12); b2 = 0x80 | ((c >> 6) & 0x3F); b3 = 0x80 | (c & 0x3F);
+            s = "%" + pad2(b1.toString(16)) + "%" + pad2(b2.toString(16)) + "%" + pad2(b3.toString(16));
+        }
+        return s;
+    }
+    function pad2(h) {
+        return h.length < 2 ? "0" + h : h;
+    }
+    /* UTF-8 byte length of a JS string (for Content-Length on socket path). */
+    function utf8Bytes(s) {
+        var n = 0, i, c;
+        s = String(s);
+        for (i = 0; i < s.length; i++) {
+            c = s.charCodeAt(i);
+            if (c < 0x80) { n += 1; } else if (c < 0x800) { n += 2; } else { n += 3; }
+        }
+        return n;
+    }
+
+    /* ---- base64 (binary-safe; used for bodyIsBase64 and response decode) ---- */
+    var _B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    function b64Encode(str) {
+        var out = "", i, c1, c2, c3, e1, e2, e3, e4;
+        str = String(str);
+        for (i = 0; i < str.length; i += 3) {
+            c1 = str.charCodeAt(i);
+            c2 = i + 1 < str.length ? str.charCodeAt(i + 1) : NaN;
+            c3 = i + 2 < str.length ? str.charCodeAt(i + 2) : NaN;
+            e1 = c1 >> 2;
+            e2 = ((c1 & 3) << 4) | (isNaN(c2) ? 0 : (c2 >> 4));
+            e3 = isNaN(c2) ? 64 : (((c2 & 15) << 2) | (isNaN(c3) ? 0 : (c3 >> 6)));
+            e4 = isNaN(c3) ? 64 : (c3 & 63);
+            out += _B64.charAt(e1) + _B64.charAt(e2) + (e3 === 64 ? "=" : _B64.charAt(e3)) + (e4 === 64 ? "=" : _B64.charAt(e4));
+        }
+        return out;
+    }
+    function b64Decode(str) {
+        var out = "", i, c1, c2, c3, c4, b1, b2, b3;
+        str = String(str).replace(/[^A-Za-z0-9+/=]/g, "");
+        for (i = 0; i < str.length; i += 4) {
+            c1 = _B64.indexOf(str.charAt(i));
+            c2 = _B64.indexOf(str.charAt(i + 1));
+            c3 = str.charAt(i + 2) === "=" ? 64 : _B64.indexOf(str.charAt(i + 2));
+            c4 = str.charAt(i + 3) === "=" ? 64 : _B64.indexOf(str.charAt(i + 3));
+            if (c1 < 0 || c2 < 0) { break; }
+            b1 = (c1 << 2) | (c2 >> 4);
+            out += String.fromCharCode(b1);
+            if (c3 !== 64) {
+                b2 = ((c2 & 15) << 4) | (c3 >> 2);
+                out += String.fromCharCode(b2);
+                if (c4 !== 64) {
+                    b3 = ((c3 & 3) << 6) | c4;
+                    out += String.fromCharCode(b3);
+                }
+            }
+        }
+        return out;
+    }
+
+    /* ===================================================================
+     * 3. ES3 JSON (eson-style; parse never throws -> null on failure)
+     * =================================================================== */
+    var _JSON = {};
+    _JSON.parse = (function () {
+        function P(src) {
+            this.s = String(src);
+            this.i = 0;
+        }
+        function ws(p) {
+            var c;
+            while (p.i < p.s.length) {
+                c = p.s.charAt(p.i);
+                if (c === " " || c === "\t" || c === "\n" || c === "\r") { p.i++; } else { break; }
+            }
+        }
+        function lit(p, w) {
+            if (p.s.substr(p.i, w.length) === w) { p.i += w.length; return true; }
+            return false;
+        }
+        function num(p) {
+            var m = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(p.s.substr(p.i));
+            if (!m) { return null; }
+            p.i += m[0].length;
+            return parseFloat(m[0]);
+        }
+        function str(p) {
+            var out = "", c, u, j, code;
+            if (p.s.charAt(p.i) !== '"') { return null; }
+            p.i++;
+            while (p.i < p.s.length) {
+                c = p.s.charAt(p.i);
+                if (c === '"') { p.i++; return out; }
+                if (c === "\\") {
+                    p.i++;
+                    if (p.i >= p.s.length) { return null; }
+                    c = p.s.charAt(p.i);
+                    if (c === "n") { out += "\n"; }
+                    else if (c === "t") { out += "\t"; }
+                    else if (c === "r") { out += "\r"; }
+                    else if (c === "b") { out += "\b"; }
+                    else if (c === "f") { out += "\f"; }
+                    else if (c === "/") { out += "/"; }
+                    else if (c === "\\") { out += "\\"; }
+                    else if (c === '"') { out += '"'; }
+                    else if (c === "u") {
+                        u = p.s.substr(p.i + 1, 4);
+                        if (!/^[0-9a-fA-F]{4}$/.test(u)) { return null; }
+                        code = parseInt(u, 16);
+                        out += String.fromCharCode(code);
+                        p.i += 4;
+                    } else { return null; }
+                    p.i++;
+                } else {
+                    out += c;
+                    p.i++;
+                }
+            }
+            return null; /* unterminated string */
+        }
+        /* Returns: parsed value, or _PARSE_FAIL sentinel on syntax error.
+           A literal JSON `null` returns the primitive null — callers must
+           test `=== _PARSE_FAIL`, never truthiness. */
+        function val(p) {
+            var c, arr, obj, k, v, sv, n;
+            ws(p);
+            if (p.i >= p.s.length) { return _PARSE_FAIL; }
+            c = p.s.charAt(p.i);
+            if (c === "{") {
+                p.i++; obj = {};
+                ws(p);
+                if (p.s.charAt(p.i) === "}") { p.i++; return obj; }
+                for (;;) {
+                    ws(p);
+                    k = str(p);
+                    if (k === null) { return _PARSE_FAIL; }
+                    ws(p);
+                    if (p.s.charAt(p.i) !== ":") { return _PARSE_FAIL; }
+                    p.i++;
+                    v = val(p);
+                    if (v === _PARSE_FAIL) { return _PARSE_FAIL; }
+                    obj[k] = v;
+                    ws(p);
+                    c = p.s.charAt(p.i);
+                    if (c === ",") { p.i++; continue; }
+                    if (c === "}") { p.i++; break; }
+                    return _PARSE_FAIL;
+                }
+                return obj;
+            }
+            if (c === "[") {
+                p.i++; arr = [];
+                ws(p);
+                if (p.s.charAt(p.i) === "]") { p.i++; return arr; }
+                for (;;) {
+                    v = val(p);
+                    if (v === _PARSE_FAIL) { return _PARSE_FAIL; }
+                    arr.push(v);
+                    ws(p);
+                    c = p.s.charAt(p.i);
+                    if (c === ",") { p.i++; continue; }
+                    if (c === "]") { p.i++; break; }
+                    return _PARSE_FAIL;
+                }
+                return arr;
+            }
+            if (c === '"') {
+                sv = str(p);
+                return sv === null ? _PARSE_FAIL : sv;
+            }
+            if (c === "t" && lit(p, "true")) { return true; }
+            if (c === "f" && lit(p, "false")) { return false; }
+            if (c === "n" && lit(p, "null")) { return null; }
+            if (c === "-" || (c >= "0" && c <= "9")) {
+                n = num(p);
+                return n === null ? _PARSE_FAIL : n;
+            }
+            return _PARSE_FAIL;
+        }
+        return function (s) {
+            var p = new P(s), v;
+            if (typeof s !== "string") { return null; }
+            v = val(p);
+            ws(p);
+            if (v === _PARSE_FAIL) { return null; }
+            if (p.i < p.s.length) { return null; } /* trailing garbage */
+            return v;
+        };
+    })();
+    var _PARSE_FAIL = {}; /* unique sentinel for "null value vs parse error" */
+
+    _JSON.stringify = (function () {
+        function esc(s) {
+            var out = "", i, c, h;
+            for (i = 0; i < s.length; i++) {
+                c = s.charAt(i);
+                if (c === '"') { out += "\\\""; }
+                else if (c === "\\") { out += "\\\\"; }
+                else if (c === "\n") { out += "\\n"; }
+                else if (c === "\t") { out += "\\t"; }
+                else if (c === "\r") { out += "\\r"; }
+                else if (c === "\b") { out += "\\b"; }
+                else if (c === "\f") { out += "\\f"; }
+                else if (c < " " || s.charCodeAt(i) > 126) {
+                    h = s.charCodeAt(i).toString(16);
+                    out += "\\u" + ("0000" + h).slice(-4);
+                } else { out += c; }
+            }
+            return out;
+        }
+        function ser(v, stack) {
+            var i, k, arr, out, len, item;
+            if (v === null) { return "null"; }
+            var t = typeof v;
+            if (t === "string") { return "\"" + esc(v) + "\""; }
+            if (t === "number") {
+                if (isFinite(v)) { return String(v); }
+                return "null";
+            }
+            if (t === "boolean") { return v ? "true" : "false"; }
+            if (t === "undefined" || t === "function") { return undefined; }
+            if (indexOf(stack, v) >= 0) { return null; } /* circular guard */
+            stack.push(v);
+            if (isArray(v)) {
+                out = "[";
+                for (i = 0; i < v.length; i++) {
+                    if (i > 0) { out += ","; }
+                    item = ser(v[i], stack);
+                    out += (item === undefined) ? "null" : item;
+                }
+                out += "]";
+                stack.pop();
+                return out;
+            }
+            if (isObj(v)) {
+                out = "{";
+                len = 0;
+                for (k in v) {
+                    if (!hasKey(v, k)) { continue; }
+                    item = ser(v[k], stack);
+                    if (item === undefined) { continue; } /* omit undefined/fn */
+                    if (len > 0) { out += ","; }
+                    out += "\"" + esc(k) + "\":" + item;
+                    len++;
+                }
+                out += "}";
+                stack.pop();
+                return out;
+            }
+            return "null";
+        }
+        return function (v) {
+            var s = ser(v, []);
+            return s === undefined ? "null" : s;
+        };
+    })();
+
+    /* ===================================================================
+     * 4. URL helpers
+     * =================================================================== */
+    /* Returns {scheme, host, port, hostname, path, query} or null. */
+    function parseUrl(u) {
+        var m, scheme, rest, hp, pathq, path, query, hq, host, port;
+        u = String(u);
+        m = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^\/?#]*)([^?#]*)(?:\?([^#]*))?(?:#.*)?$/.exec(u);
+        if (!m) { return null; }
+        scheme = m[1].toLowerCase();
+        if (scheme !== "http" && scheme !== "https") { return null; }
+        hp = m[2];
+        pathq = m[3] || "";
+        query = m[4] || "";
+        if (hp.indexOf("@") >= 0) { return null; } /* userinfo rejected (use opts.username/password) */
+        if (hp.charAt(0) === "[") {
+            /* IPv6 literal host [::1]:8080 */
+            var br = hp.indexOf("]");
+            if (br < 0) { return null; }
+            host = hp.substring(1, br);
+            port = hp.substring(br + 1).replace(/^:/, "") || "";
+        } else {
+            var ci = hp.lastIndexOf(":");
+            if (ci >= 0) {
+                host = hp.substring(0, ci);
+                port = hp.substring(ci + 1);
+            } else {
+                host = hp;
+                port = "";
+            }
+        }
+        if (host === "") { return null; }
+        if (port === "") {
+            port = scheme === "https" ? "443" : "80";
+        }
+        if (!/^\d+$/.test(port)) { return null; }
+        if (pathq === "") { pathq = "/"; }
+        return { scheme: scheme, host: host, port: port, hostname: host, path: pathq, query: query, full: u };
+    }
+
+    /* Build "k=v&k=v" from a query object (array values repeat key). */
+    function buildQuery(q) {
+        var out = "", k, i, v;
+        for (k in q) {
+            if (!hasKey(q, k)) { continue; }
+            v = q[k];
+            if (isArray(v)) {
+                for (i = 0; i < v.length; i++) {
+                    if (out.length > 0) { out += "&"; }
+                    out += encComp(k) + "=" + encComp(v[i]);
+                }
+            } else {
+                if (out.length > 0) { out += "&"; }
+                out += encComp(k) + "=" + encComp(v === null || v === undefined ? "" : v);
+            }
+        }
+        return out;
+    }
+
+    /* Merge opts.query into the URL string; returns new URL string. */
+    function mergeQuery(url, q) {
+        var u = parseUrl(url), qs, sep;
+        if (!u || !q || ownKeys(q).length === 0) { return url; }
+        qs = buildQuery(q);
+        if (qs === "") { return url; }
+        sep = u.query === "" ? "?" : "&";
+        return url + sep + qs;
+    }
+
+    /* Resolve a possibly-relative Location against a base URL. */
+    function resolveLocation(base, loc) {
+        var u, m, scheme, hp, path;
+        loc = String(loc);
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(loc)) { return loc; }
+        u = parseUrl(base);
+        if (!u) { return loc; }
+        if (loc.charAt(0) === "/") {
+            scheme = u.scheme + "://" + u.hostname;
+            if (u.port !== "80" && u.port !== "443") { scheme += ":" + u.port; }
+            return scheme + loc;
+        }
+        if (loc.charAt(0) === "?") {
+            var p = u.path.indexOf("?") >= 0 ? u.path.substring(0, u.path.indexOf("?")) : u.path;
+            scheme = u.scheme + "://" + u.hostname;
+            if (u.port !== "80" && u.port !== "443") { scheme += ":" + u.port; }
+            return scheme + p + loc;
+        }
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(loc)) { return loc; }
+        /* relative path */
+        var basePath = u.path;
+        var idx = basePath.lastIndexOf("/");
+        var dir = idx >= 0 ? basePath.substring(0, idx + 1) : "/";
+        scheme = u.scheme + "://" + u.hostname;
+        if (u.port !== "80" && u.port !== "443") { scheme += ":" + u.port; }
+        return scheme + dir + loc;
+    }
+
+    /* ===================================================================
+     * 5. Header helpers
+     * =================================================================== */
+    /* Validate + normalize request headers to {name: string|array}. Returns
+       {headers: out} or {error: errObj}. Rejects CR/LF anywhere. */
+    function prepHeaders(h) {
+        var out = {}, k, v, i;
+        if (h === null || h === undefined) { return { headers: out }; }
+        if (!isObj(h)) { return { error: makeError("invalid-args", "headers must be an object") }; }
+        for (k in h) {
+            if (!hasKey(h, k)) { continue; }
+            if (/[\r\n]/.test(k) || k === "" || k.indexOf(" ") >= 0) {
+                return { error: makeError("invalid-header", "invalid header name: " + k) };
+            }
+            v = h[k];
+            if (typeof v === "string") {
+                if (/[\r\n]/.test(v)) { return { error: makeError("invalid-header", "invalid header value for: " + k) }; }
+                out[k] = v;
+            } else if (isArray(v)) {
+                var arr = [];
+                for (i = 0; i < v.length; i++) {
+                    if (typeof v[i] !== "string" || /[\r\n]/.test(v[i])) {
+                        return { error: makeError("invalid-header", "invalid header value for: " + k) };
+                    }
+                    arr.push(v[i]);
+                }
+                out[k] = arr;
+            } else {
+                return { error: makeError("invalid-args", "header value must be string or array: " + k) };
+            }
+        }
+        return { headers: out };
+    }
+
+    /* Normalize a parsed response header block into a lowercased map.
+       Repeated headers joined with ", " (Set-Cookie -> "; "). */
+    function normRespHeaders(lines) {
+        var out = {}, i, ci, name, val, key, prev;
+        for (i = 0; i < lines.length; i++) {
+            ci = lines[i].indexOf(":");
+            if (ci <= 0) { continue; }
+            name = lower(trim(lines[i].substring(0, ci)));
+            val = trim(lines[i].substring(ci + 1));
+            if (val === "") { continue; }
+            if (hasKey(out, name)) {
+                prev = out[name];
+                out[name] = name === "set-cookie" ? prev + "; " + val : prev + ", " + val;
+            } else {
+                out[name] = val;
+            }
+        }
+        return out;
+    }
+
+    /* ===================================================================
+     * 6. Result / error builders
+     * =================================================================== */
+    function makeError(code, message, detail) {
+        var e = hasKey(_ERR, code) ? _ERR[code] : _ERR["internal"];
+        return {
+            code: code,
+            category: e.c,
+            message: message || code,
+            retryable: e.r,
+            detail: detail || {}
+        };
+    }
+
+    function baseMeta(path, url) {
+        return {
+            path: path, url: url, redirects: 0, timeMs: 0, bytes: 0,
+            timeoutEnforced: false, tlsVersion: null, httpVersion: null,
+            abi: null, nativeVersion: null
+        };
+    }
+
+    function makeResult(status, statusText, headers, body, error, meta) {
+        var okFlag = (status >= 200 && status < 300);
+        var bodyStr = (body === undefined || body === null) ? "" : String(body);
+        return {
+            status: status,
+            statusText: statusText || "",
+            headers: headers || {},
+            body: bodyStr,
+            bodyText: bodyStr,
+            ok: okFlag,
+            error: error || null,
+            meta: meta || {}
+        };
+    }
+
+    /* Body splitting per api-spec s3: `body` = decoded (binary-safe) string,
+       `bodyText` = display-safe form (base64 for binary). */
+    function finishResult(status, statusText, headers, body, encoding, error, meta) {
+        var r = makeResult(status, statusText, headers, body, error, meta);
+        if (encoding === "base64") {
+            r.body = b64Decode(body);
+            r.bodyText = body; /* base64 is display-safe */
+        } else {
+            r.body = body;
+            r.bodyText = body;
+        }
+        return r;
+    }
+
+    /* ===================================================================
+     * 7. Host / platform detection
+     * =================================================================== */
+    function hostName() {
+        if (_hostName !== null) { return _hostName; }
+        try {
+            if (typeof app !== "undefined" && app && typeof app.name === "string") {
+                _hostName = app.name;
+            } else {
+                _hostName = "";
+            }
+        } catch (e) {
+            _hostName = "";
+        }
+        return _hostName;
+    }
+    function platform() {
+        if (_platform !== null) { return _platform; }
+        var os = "";
+        try {
+            if (typeof $ !== "undefined" && $.os) { os = String($.os); }
+        } catch (e) { os = ""; }
+        _platform = os.indexOf("Windows") === 0 ? "Windows" :
+                    (os.indexOf("Mac") === 0 ? "Macintosh" : (os === "" ? "unknown" : "other"));
+        return _platform;
+    }
+    function socketAvailable() {
+        try {
+            return typeof Socket !== "undefined";
+        } catch (e) { return false; }
+    }
+    function externalObjectAvailable() {
+        try {
+            return typeof ExternalObject !== "undefined";
+        } catch (e) { return false; }
+    }
+
+    /* ===================================================================
+     * 8. Native transport (espack.dll via ExternalObject)
+     * =================================================================== */
+    /* Probe + cache the accelerator. Returns true if usable. */
+    function probeNative() {
+        if (_accel !== null) { return !_accelDead; }
+        if (!externalObjectAvailable()) { _accelDead = true; return false; }
+        if (platform() !== "Windows") { _accelDead = true; return false; }
+        var accel = null;
+        try {
+            accel = new ExternalObject("lib:espack");
+            var v = accel.espack_version();
+            if (typeof v !== "string" || !/^\d+\.\d+\.\d+$/.test(v)) {
+                accel = null;
+            } else {
+                _nativeVersion = v;
+            }
+        } catch (e) {
+            accel = null;
+        }
+        if (accel === null) { _accelDead = true; return false; }
+        _accel = accel;
+        return true;
+    }
+
+    /* Native driver — maps the envelope (native-abi.md s4) to a Result.
+       Returns null when the DLL is ABI-incompatible (caller falls back to
+       socket). Never throws. */
+    function nativeExecute(method, url, headersJson, body, optsJson) {
+        var envStr = null, env = null, msg = "", e, mapped;
+        if (_accel === null) {
+            return { error: makeError("internal", "native transport not initialized") };
+        }
+        try {
+            envStr = _accel.espack_request(method, url, headersJson, body, optsJson);
+        } catch (e2) {
+            return { error: makeError("internal", "espack_request threw: " + String(e2.message || e2)) };
+        }
+        if (envStr === null || envStr === undefined || envStr === "") {
+            try { msg = _accel.espack_last_error(); } catch (e3) { msg = ""; }
+            return { error: makeError("internal", msg || "espack_request returned no data") };
+        }
+        env = _JSON.parse(envStr);
+        /* Free the C buffer. Contract: every espack_request return is freed
+           exactly once. espack_free tolerates the JS-string copy the proxy
+           hands back (returns 0 without crashing for foreign pointers). */
+        try { _accel.espack_free(envStr); } catch (e4) { /* best effort */ }
+        if (env === null || typeof env !== "object") {
+            return { error: makeError("internal", "espack envelope parse failed") };
+        }
+        if (env.abi !== undefined && env.abi !== _ABI) {
+            _accelDead = true; /* incompatible DLL — degrade to socket */
+            return null;
+        }
+        var m = env.meta || {};
+        var meta = baseMeta("native", m.finalUrl || url);
+        meta.redirects = m.redirects || 0;
+        meta.timeMs = typeof m.timeMs === "number" ? m.timeMs : 0;
+        meta.bytes = typeof m.bytes === "number" ? m.bytes : 0;
+        meta.timeoutEnforced = true;
+        meta.tlsVersion = m.tlsVersion || null;
+        meta.httpVersion = m.httpVersion || null;
+        meta.abi = env.abi || _ABI;
+        meta.nativeVersion = _nativeVersion;
+        meta.winhttpError = m.winhttpError || null;
+
+        if (env.error && typeof env.error === "object") {
+            var ec = env.error.code || "internal";
+            var detail = {};
+            if (m.winhttpError !== null && m.winhttpError !== undefined) { detail.winhttp = m.winhttpError; }
+            return makeResult(0, "", {}, "", makeError(ec, env.error.message || ec, detail), meta);
+        }
+        var headers = isObj(env.headers) ? env.headers : {};
+        return finishResult(
+            typeof env.status === "number" ? env.status : 0,
+            env.statusText || "",
+            headers,
+            env.body || "",
+            env.bodyEncoding === "base64" ? "base64" : "utf8",
+            null,
+            meta
+        );
+    }
+
+    /* ===================================================================
+     * 9. Socket transport (cleartext HTTP/1.1 only)
+     * =================================================================== */
+    /* Parse "HTTP/1.1 200 OK\r\n...\r\n\r\n" + body buffer.
+       Returns {status, statusText, headers, rawBody, chunked, contentLength}
+       or {error}. */
+    function parseHttpResponse(buf) {
+        var headEnd = buf.indexOf("\r\n\r\n");
+        if (headEnd < 0) {
+            return { error: makeError("network", "malformed HTTP response (no header terminator)") };
+        }
+        var head = buf.substring(0, headEnd);
+        var rawBody = buf.substring(headEnd + 4);
+        var lines = head.split("\r\n");
+        var statusLine = lines[0] || "";
+        var parts = statusLine.split(" ");
+        if (parts.length < 2 || parts[0].indexOf("HTTP/") !== 0) {
+            return { error: makeError("network", "malformed HTTP status line: " + statusLine) };
+        }
+        var status = parseInt(parts[1], 10);
+        if (isNaN(status)) {
+            return { error: makeError("network", "malformed HTTP status code") };
+        }
+        var statusText = "";
+        var si = statusLine.indexOf(" ");
+        si = statusLine.indexOf(" ", si + 1);
+        if (si >= 0) { statusText = trim(statusLine.substring(si + 1)); }
+        var headers = normRespHeaders(lines.slice(1));
+        var chunked = false, cl = -1;
+        if (hasKey(headers, "transfer-encoding") &&
+            lower(headers["transfer-encoding"]).indexOf("chunked") >= 0) {
+            chunked = true;
+        }
+        if (hasKey(headers, "content-length")) {
+            var cv = parseInt(headers["content-length"], 10);
+            if (!isNaN(cv)) { cl = cv; }
+        }
+        return { status: status, statusText: statusText, headers: headers, rawBody: rawBody, chunked: chunked, contentLength: cl };
+    }
+
+    /* Decode a chunked body per RFC 7230. */
+    function dechunk(s) {
+        var out = "", i = 0, lineEnd, size, m;
+        while (i < s.length) {
+            lineEnd = s.indexOf("\r\n", i);
+            if (lineEnd < 0) { break; }
+            m = /^([0-9a-fA-F]+)/.exec(s.substring(i, lineEnd));
+            if (!m) { break; }
+            size = parseInt(m[1], 16);
+            i = lineEnd + 2;
+            if (size === 0) { break; }
+            if (i + size > s.length) { size = s.length - i; } /* truncate */
+            out += s.substring(i, i + size);
+            i += size;
+            if (s.charAt(i) === "\r") { i += 2; } /* skip trailing CRLF */
+        }
+        return out;
+    }
+
+    /* One cleartext request+read over Socket. Returns parsed response or
+       {error}. No TLS. Connection: close; body read to EOF. */
+    function socketRoundTrip(host, port, reqHead, body, maxBytes) {
+        var s = null, buf = "", chunk, resp;
+        try {
+            if (!socketAvailable()) {
+                return { error: makeError("unsupported", "Socket object not available in this host") };
+            }
+            s = new Socket();
+            var opened = s.open(host, parseInt(port, 10));
+            if (!opened) {
+                var serr = "";
+                try { serr = String(s.error); } catch (e) { serr = ""; }
+                return { error: makeError("connect", "could not connect to " + host + ":" + port + (serr ? " (" + serr + ")" : "")) };
+            }
+            s.writeln(reqHead);
+            if (body !== "") { s.write(body); }
+            s.writeln("");
+            var guard = 0;
+            while (!s.eof) {
+                chunk = s.read(8192);
+                if (chunk === null || chunk === undefined || chunk === "") {
+                    if (!s.eof) { guard++; if (guard > 200) { break; } }
+                    continue;
+                }
+                buf += chunk;
+                if (buf.length > maxBytes) {
+                    s.close();
+                    return { error: makeError("body-too-large", "response exceeded maxBodyBytes (" + maxBytes + ")") };
+                }
+            }
+            s.close();
+        } catch (e5) {
+            try { if (s !== null) { s.close(); } } catch (e6) { /* ignore */ }
+            return { error: makeError("network", "socket error: " + String(e5.message || e5)) };
+        }
+        if (buf === "") {
+            return { error: makeError("network", "empty response from server") };
+        }
+        resp = parseHttpResponse(buf);
+        if (resp.error) { return resp; }
+        var bodyOut = resp.chunked ? dechunk(resp.rawBody) : resp.rawBody;
+        if (resp.contentLength >= 0 && bodyOut.length > resp.contentLength) {
+            bodyOut = bodyOut.substring(0, resp.contentLength);
+        }
+        resp.body = bodyOut;
+        return resp;
+    }
+
+    /* Socket driver with JS-side redirect following (api-spec s8).
+       Returns a Result; never throws. */
+    function socketExecute(req, opts, redirectsUsed) {
+        var url = req.url, u, hop, resp, meta, method, reqHead, line, body, k, v, i, hdrs, location, nextUrl, nextMethod, authDropped;
+        var redirs = redirectsUsed || 0;
+        var maxRedirs = opts.maxRedirects;
+        var headersOut = copyObj(req.headers);
+        if (req.body !== "" && !hasKey(headersOut, "Content-Length")) {
+            headersOut["Content-Length"] = String(utf8Bytes(req.body));
+        }
+        if (!hasKey(headersOut, "Host")) {
+            u = parseUrl(url);
+            if (u) { headersOut["Host"] = u.hostname + (u.port !== "80" ? ":" + u.port : ""); }
+        }
+        if (!hasKey(headersOut, "User-Agent")) { headersOut["User-Agent"] = opts.userAgent; }
+        if (!hasKey(headersOut, "Connection")) { headersOut["Connection"] = "close"; }
+
+        for (hop = 0; hop < 100; hop++) {
+            u = parseUrl(url);
+            if (!u) {
+                return makeResult(0, "", {}, "", makeError("bad-url", "invalid URL: " + url), baseMeta("socket", url));
+            }
+            if (u.scheme !== "http") {
+                return makeResult(0, "", {}, "", makeError("unsupported", "HTTPS requires the espack.dll native accelerator (socket path is cleartext HTTP only): " + url, { url: url }), baseMeta("socket", url));
+            }
+            reqHead = "";
+            reqHead += req.method + " " + u.path + (u.query !== "" ? "?" + u.query : "") + " HTTP/1.1\r\n";
+            hdrs = ownKeys(headersOut);
+            for (i = 0; i < hdrs.length; i++) {
+                k = hdrs[i];
+                v = headersOut[k];
+                if (isArray(v)) {
+                    for (var j = 0; j < v.length; j++) { reqHead += k + ": " + v[j] + "\r\n"; }
+                } else {
+                    reqHead += k + ": " + v + "\r\n";
+                }
+            }
+            reqHead += "\r\n";
+
+            resp = socketRoundTrip(u.hostname, u.port, reqHead, req.body, opts.maxBodyBytes);
+            if (resp.error) {
+                var m0 = baseMeta("socket", url);
+                m0.timeoutEnforced = false;
+                return makeResult(0, "", {}, "", resp.error, m0);
+            }
+            meta = baseMeta("socket", url);
+            meta.redirects = redirs;
+            meta.timeoutEnforced = false;
+            meta.httpVersion = "1.1";
+            meta.bytes = utf8Bytes(resp.body);
+
+            if (opts.redirect === "follow" &&
+                resp.status >= 300 && resp.status < 400 &&
+                hasKey(resp.headers, "location")) {
+                if (redirs >= maxRedirs) {
+                    return makeResult(resp.status, resp.statusText, resp.headers, resp.body, makeError("too-many-redirects", "maxRedirects (" + maxRedirs + ") exceeded"), meta);
+                }
+                location = resp.headers["location"];
+                nextUrl = resolveLocation(url, location);
+                nextMethod = req.method;
+                if (resp.status === 301 || resp.status === 302 || resp.status === 303) {
+                    nextMethod = "GET";
+                    req.body = "";
+                    delete headersOut["Content-Length"];
+                    delete headersOut["Content-Type"];
+                }
+                /* Drop Authorization on cross-host (or downgrade) redirects. */
+                var nu = parseUrl(nextUrl);
+                var ou = parseUrl(url);
+                if (nu && ou && (nu.hostname !== ou.hostname || nu.port !== ou.port || nu.scheme !== ou.scheme)) {
+                    delete headersOut["Authorization"];
+                }
+                req.method = nextMethod;
+                url = nextUrl;
+                redirs++;
+                continue;
+            }
+            /* Final response */
+            meta.url = url;
+            meta.redirects = redirs;
+            return finishResult(resp.status, resp.statusText, resp.headers, resp.body, "utf8", null, meta);
+        }
+        return makeResult(0, "", {}, "", makeError("too-many-redirects", "redirect loop detected"), baseMeta("socket", url));
+    }
+
+    /* ===================================================================
+     * 10. Transport selection
+     * =================================================================== */
+    function resolveTransport() {
+        var forced = _forceTransport;
+        if (_transport !== null) { return _transport; }
+        if (forced === "native") {
+            if (probeNative()) { _transport = "native"; return _transport; }
+            /* degrade: socket if present, else none */
+        }
+        if (forced === "socket") {
+            _transport = socketAvailable() ? "socket" : "none";
+            return _transport;
+        }
+        /* auto */
+        if (probeNative()) { _transport = "native"; return _transport; }
+        _transport = socketAvailable() ? "socket" : "none";
+        return _transport;
+    }
+
+    /* ===================================================================
+     * 11. request() orchestration
+     * =================================================================== */
+    /* Validate + normalize opts into a clean internal request object.
+       Returns {req, opts} or {error}. */
+    function normalize(opts) {
+        var o = opts || {};
+        var merged = copyObj(_DEFAULTS);
+        var ok;
+        /* shallow-merge configured/default + per-call */
+        var keys = ownKeys(o), i, k;
+        for (i = 0; i < keys.length; i++) {
+            k = keys[i];
+            if (hasKey(merged, k) || k === "method" || k === "url" || k === "query" ||
+                k === "headers" || k === "body" || k === "username" || k === "password" ||
+                k === "json") {
+                merged[k] = o[k];
+            }
+        }
+        var method = merged.method || "GET";
+        if (typeof method !== "string" || !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(method)) {
+            return { error: makeError("invalid-args", "invalid HTTP method: " + String(method)) };
+        }
+        method = method.toUpperCase();
+        var url = merged.url;
+        if (typeof url !== "string" || url === "") {
+            return { error: makeError("invalid-args", "url is required") };
+        }
+        var u = parseUrl(url);
+        if (!u) {
+            return { error: makeError("bad-url", "invalid or unsupported URL: " + url) };
+        }
+        var fullUrl = mergeQuery(url, merged.query);
+
+        var hp = prepHeaders(merged.headers || {});
+        if (hp.error) { return { error: hp.error }; }
+
+        var body = "";
+        var autoJson = false;
+        if (merged.body !== undefined && merged.body !== null) {
+            if (typeof merged.body === "string") {
+                body = merged.body;
+            } else if (isObj(merged.body) || isArray(merged.body)) {
+                body = _JSON.stringify(merged.body);
+                autoJson = true;
+            } else if (typeof merged.body === "number" || typeof merged.body === "boolean") {
+                body = String(merged.body);
+                autoJson = true;
+            } else {
+                return { error: makeError("invalid-args", "body must be a string or object") };
+            }
+        }
+        var headers = hp.headers;
+        if (autoJson && !hasKey(headers, "Content-Type")) {
+            headers["Content-Type"] = "application/json";
+        }
+        if (typeof merged.timeout !== "number" || merged.timeout < 0) {
+            return { error: makeError("invalid-args", "timeout must be a non-negative number") };
+        }
+        if (merged.redirect !== "follow" && merged.redirect !== "manual") {
+            return { error: makeError("invalid-args", "redirect must be 'follow' or 'manual'") };
+        }
+        if (typeof merged.maxRedirects !== "number" || merged.maxRedirects < 0) {
+            return { error: makeError("invalid-args", "maxRedirects must be a non-negative number") };
+        }
+        var effOpts = {
+            timeout: merged.timeout,
+            redirect: merged.redirect,
+            maxRedirects: merged.maxRedirects,
+            verifyTls: merged.verifyTls !== false,
+            userAgent: merged.userAgent || _DEFAULTS.userAgent,
+            decompress: merged.decompress !== false,
+            maxBodyBytes: typeof merged.maxBodyBytes === "number" ? merged.maxBodyBytes : _DEFAULTS.maxBodyBytes,
+            bodyIsBase64: merged.bodyIsBase64 === true,
+            username: merged.username || null,
+            password: merged.password || null,
+            proxy: merged.proxy || null,
+            json: merged.json === true
+        };
+        return {
+            req: {
+                method: method,
+                url: fullUrl,
+                headers: headers,
+                body: body
+            },
+            opts: effOpts,
+            parsed: u
+        };
+    }
+
+    function noTransportResult(url, t0) {
+        var meta = baseMeta("none", url);
+        meta.timeMs = now() - t0;
+        return makeResult(0, "", {}, "", makeError("unsupported", "no HTTP transport available (no espack.dll and no Socket object)"), meta);
+    }
+
+    function request(opts) {
+        var t0 = now();
+        var n = normalize(opts);
+        if (n.error) {
+            var metaE = baseMeta("none", (opts && opts.url) || "");
+            metaE.timeMs = now() - t0;
+            return makeResult(0, "", {}, "", n.error, metaE);
+        }
+        var tr = resolveTransport();
+        if (tr === "native") {
+            var r = nativeRequest(n, t0);
+            if (r !== null) {
+                if (n.opts.json && r.ok && r.error === null) {
+                    r.data = _JSON.parse(r.body);
+                    if (r.data === null && r.body !== "" && r.body !== "null") {
+                        return finishResult(r.status, r.statusText, r.headers, r.body, "utf8", makeError("invalid-json", "response body is not valid JSON"), r.meta);
+                    }
+                }
+                return r;
+            }
+            /* incompatible DLL: fall through to socket */
+            _transport = null;
+            _accel = null;
+            tr = resolveTransport();
+        }
+        if (tr === "socket") {
+            var rs = socketExecute(n.req, n.opts, 0);
+            if (n.opts.json && rs.ok && rs.error === null) {
+                rs.data = _JSON.parse(rs.body);
+                if (rs.data === null && rs.body !== "" && rs.body !== "null") {
+                    return finishResult(rs.status, rs.statusText, rs.headers, rs.body, "utf8", makeError("invalid-json", "response body is not valid JSON"), rs.meta);
+                }
+            }
+            return rs;
+        }
+        return noTransportResult(n.req.url, t0);
+    }
+
+    /* Native path with credentials/proxy wiring + envelope mapping. Returns
+       Result or null (ABI-incompatible -> caller falls back to socket). */
+    function nativeRequest(n, t0) {
+        var req = n.req, o = n.opts;
+        var headersJson = _JSON.stringify(req.headers);
+        var optsJsonObj = {
+            timeoutMs: o.timeout,
+            redirect: o.redirect,
+            maxRedirects: o.maxRedirects,
+            verifyTls: o.verifyTls,
+            userAgent: o.userAgent,
+            username: o.username,
+            password: o.password,
+            proxy: o.proxy,
+            decompress: o.decompress,
+            maxBodyBytes: o.maxBodyBytes,
+            bodyIsBase64: o.bodyIsBase64
+        };
+        var optsJson = _JSON.stringify(optsJsonObj);
+        var body = req.body;
+        if (o.bodyIsBase64) { body = b64Encode(req.body); }
+        var out = nativeExecute(req.method, req.url, headersJson, body, optsJson);
+        if (out === null) { return null; }
+        if (out.error) {
+            var metaErr = baseMeta("native", req.url);
+            metaErr.timeMs = now() - t0;
+            metaErr.timeoutEnforced = true;
+            return makeResult(0, "", {}, "", out.error, metaErr);
+        }
+        out.meta.timeMs = now() - t0;
+        return out;
+    }
+
+    /* ===================================================================
+     * 12. Public API
+     * =================================================================== */
+    function copyDefaults() {
+        return copyObj(_DEFAULTS);
+    }
+
+    function refreshSnapshot() {
+        _defaultsSnapshot = copyObj(_DEFAULTS);
+    }
+    refreshSnapshot();
+
+    function configure(patch) {
+        var prev = copyDefaults();
+        if (patch && isObj(patch)) {
+            var ks = ownKeys(patch), i, k;
+            for (i = 0; i < ks.length; i++) {
+                k = ks[i];
+                if (k === "transport" && (patch[k] === "auto" || patch[k] === "native" || patch[k] === "socket")) {
+                    _forceTransport = patch[k];
+                    _DEFAULTS.transport = patch[k];
+                } else if (hasKey(_DEFAULTS, k)) {
+                    _DEFAULTS[k] = patch[k];
+                }
+            }
+        }
+        refreshSnapshot();
+        return prev;
+    }
+
+    function forceTransport(name) {
+        if (name === "auto" || name === "native" || name === "socket") {
+            _forceTransport = name;
+            resetTransport();
+        }
+        return activeTransportName();
+    }
+
+    function activeTransportName() {
+        if (_transport === null) {
+            return resolveTransport();
+        }
+        return _transport;
+    }
+
+    function resetTransport() {
+        _transport = null;
+        _accel = null;
+        _accelDead = false;
+        _nativeVersion = null;
+    }
+
+    function transportInfo() {
+        var tr = activeTransportName();
+        var info = {
+            host: hostName() || null,
+            platform: platform(),
+            transport: tr,
+            externalObjectAvailable: externalObjectAvailable(),
+            socketAvailable: socketAvailable(),
+            nativeVersion: _nativeVersion,
+            abi: _ABI
+        };
+        return info;
+    }
+
+    function jsonHelper(s) {
+        return _JSON.parse(s);
+    }
+    jsonHelper.parse = function (s) { return _JSON.parse(s); };
+    jsonHelper.stringify = function (v) { return _JSON.stringify(v); };
+
+    function reqC(url, opts) {
+        var o = copyObj(opts || {});
+        o.url = url;
+        return request(o);
+    }
+    function bodyC(url, body, opts) {
+        var o = copyObj(opts || {});
+        o.url = url;
+        o.body = body;
+        return request(o);
+    }
+
+    var eshttp = {
+        version: _VERSION,
+        transport: "auto",
+        request: request,
+        get: function (url, opts) { return reqC(url, opts); },
+        post: function (url, body, opts) { return bodyC(url, body, opts); },
+        put: function (url, body, opts) { var o = bodyC(url, body, opts); return o; },
+        del: function (url, opts) { var o = copyObj(opts || {}); o.url = url; o.method = "DELETE"; return request(o); },
+        json: jsonHelper,
+        configure: configure,
+        forceTransport: forceTransport,
+        resetTransport: resetTransport,
+        transportInfo: transportInfo,
+        DEFAULTS: _defaultsSnapshot,
+        error: _errConsts
+    };
+    /* keep eshttp.transport current on access — refresh after each request */
+    eshttp.get = function (url, opts) { var o = copyObj(opts || {}); o.method = "GET"; o.url = url; return request(o); };
+    eshttp.post = function (url, body, opts) { var o = copyObj(opts || {}); o.method = "POST"; o.url = url; o.body = body; return request(o); };
+    eshttp.put = function (url, body, opts) { var o = copyObj(opts || {}); o.method = "PUT"; o.url = url; o.body = body; return request(o); };
+
+    /* refresh eshttp.transport when resolved */
+    var _origRequest = request;
+    eshttp.request = function (opts) {
+        var r = _origRequest(opts);
+        eshttp.transport = (_transport === null ? resolveTransport() : _transport);
+        return r;
+    };
+
+    /* attach to $.global (global object). Never overwrite an existing eshttp. */
+    try {
+        var g = (typeof $ !== "undefined" && $.global) ? $.global : global;
+        if (g.eshttp === undefined) {
+            g.eshttp = eshttp;
+        }
+    } catch (e) {
+        if (global.eshttp === undefined) { global.eshttp = eshttp; }
+    }
+
+})(this);

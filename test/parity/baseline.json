@@ -1,0 +1,26 @@
+{
+  "env": "node v22.23.2 win32 x64",
+  "iter": 10,
+  "warm": 5,
+  "timestamp": "2026-08-10T22:02:51.041Z",
+  "oneshot": {
+    "median": 2.67985,
+    "p95": 3.3695,
+    "sd": 0.35631710362166635,
+    "n": 10,
+    "metaPath": "cli-oneshot"
+  },
+  "pipe": {
+    "median": 0.05985,
+    "p95": 0.1885,
+    "sd": 0.05584743602987617,
+    "n": 10,
+    "coldWithSpawnMs": 0.2924,
+    "metaPath": "cli"
+  },
+  "ratioPipeVsOneshot": 0.022333339552586897,
+  "amortization": {
+    "spawnAmortized": "4.9x cold-vs-warm",
+    "note": "cold sample includes ensureWorker spawn; warm median is steady-state"
+  }
+}

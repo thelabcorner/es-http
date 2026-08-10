@@ -1,0 +1,93 @@
+{
+  "timestamp": "2026-08-10T17:30:57.120Z",
+  "node": "v22.23.2",
+  "platform": "win32",
+  "warmupIterations": 5,
+  "measuredIterations": 10,
+  "results": [
+    {
+      "name": "json.stringify",
+      "medianNs": 46350,
+      "stdDevNs": 5587.336873084827,
+      "varianceNs": 31218333.333333332,
+      "cvPercent": 12.05466423535022
+    },
+    {
+      "name": "json.parse",
+      "medianNs": 39350,
+      "stdDevNs": 1784.6568297574747,
+      "varianceNs": 3185000,
+      "cvPercent": 4.535341371683545
+    },
+    {
+      "name": "json.parse+stringify (round-trip)",
+      "medianNs": 81300,
+      "stdDevNs": 71163.20834688541,
+      "varianceNs": 5064202222.222222,
+      "cvPercent": 87.5316215828849
+    },
+    {
+      "name": "helpers.base64Encode (~560 bytes)",
+      "medianNs": 43750,
+      "stdDevNs": 132358.1945580502,
+      "varianceNs": 17518691666.666668,
+      "cvPercent": 302.53301613268616
+    },
+    {
+      "name": "helpers.base64Decode (~560 bytes)",
+      "medianNs": 32650,
+      "stdDevNs": 4185.225335762832,
+      "varianceNs": 17516111.111111112,
+      "cvPercent": 12.818454320866254
+    },
+    {
+      "name": "helpers.base64Encode+Decode (round-trip)",
+      "medianNs": 59100,
+      "stdDevNs": 24521.169992024807,
+      "varianceNs": 601287777.7777778,
+      "cvPercent": 41.49098137398444
+    },
+    {
+      "name": "helpers.base64Encode (binary ~350 bytes)",
+      "medianNs": 21850,
+      "stdDevNs": 936.0080721399314,
+      "varianceNs": 876111.1111111111,
+      "cvPercent": 4.28378980384408
+    },
+    {
+      "name": "helpers.base64Decode (binary ~350 bytes)",
+      "medianNs": 26200,
+      "stdDevNs": 7411.327666334675,
+      "varianceNs": 54927777.777777776,
+      "cvPercent": 28.287510176849906
+    },
+    {
+      "name": "request() native path (GET, JSON response)",
+      "medianNs": 39600,
+      "stdDevNs": 33040.31162371493,
+      "varianceNs": 1091662192.192192,
+      "cvPercent": 83.43513036291648
+    },
+    {
+      "name": "request() native path (POST, JSON body)",
+      "medianNs": 40100,
+      "stdDevNs": 32462.544367113107,
+      "varianceNs": 1053816786.7867868,
+      "cvPercent": 80.95397597783818
+    },
+    {
+      "name": "request() native path (GET, custom headers)",
+      "medianNs": 44300,
+      "stdDevNs": 45821.93044066683,
+      "varianceNs": 2099649309.3093092,
+      "cvPercent": 103.43550889541045
+    },
+    {
+      "name": "request() socket path (GET, no server - error path)",
+      "medianNs": 57656300,
+      "stdDevNs": 6791218.684753232,
+      "varianceNs": 46120651224141.414,
+      "cvPercent": 11.778797260235624
+    }
+  ]
+}

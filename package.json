@@ -1,0 +1,25 @@
+{
+  "name": "eshttp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "ES3 ExtendScript HTTP client for Adobe hosts (eshttp.dll native accelerator + Socket fallback). TypeScript source (src/*.ts) bundled by esbuild into dist/eshttp.jsx (ES3 IIFE, #include/$.evalFile safe) + dist/eshttp-core.esm.mjs (Node harnesses). This package.json stays `type: commonjs` because the QA harness (test/harness.js) is a CommonJS .js file; the ESM core bundle is a .mjs file and imports fine from .mjs harnesses or via dynamic import() from CommonJS.",
+  "main": "dist/eshttp-core.esm.mjs",
+  "scripts": {
+    "build": "node eshttp-build.mjs",
+    "typecheck": "npx tsc --noEmit -p .",
+    "pretest": "node eshttp-build.mjs",
+    "test": "node test/harness.js --all",
+    "test:headless": "node test/harness.js",
+    "test:net": "node test/harness.js --net",
+    "test:parity": "node test/parity/parity.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "GPL-3.0-or-later"
+}
