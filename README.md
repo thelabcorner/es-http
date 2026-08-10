@@ -39,6 +39,7 @@
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [API](#api)
+- [Alternatives](#alternatives)
 - [Validation](#validation)
 - [Performance](#performance)
 - [Security Model](#security-model)
@@ -544,6 +545,35 @@ ES3 lane and exposes the same facade — the never-throws design holds by
 construction. Parity is pinned by the differential suites (753/0 JSON with
 D1–D7 documented divergences; 103,711/0 base64/UTF-8). See
 [Validation](#validation).
+
+---
+
+## Alternatives
+
+The well-known community option for ExtendScript HTTP is
+[buraktamturk/adobe-javascript-http-client](https://github.com/buraktamturk/adobe-javascript-http-client)
+(68 stars, MIT). It is a capable Socket-based client, and its author
+documents its limitations plainly
+([issue #1](https://github.com/buraktamturk/buraktamturk-web/issues/1)):
+**SSL/TLS is not supported** (Adobe's `Socket` class has no SSL support), the
+library is **not async**, it speaks **HTTP/1.0** only (no chunked responses),
+and there is **no Keep-Alive** — every call opens a new TCP connection.
+Those limits follow from the `Socket` class itself: TLS-through-Socket is not
+possible in ExtendScript.
+
+| Alternative | Transport | HTTPS/TLS | HTTP version | Keep-alive | Timeout | Redirects | Proxy | gzip |
+|---|---|---|---|---|---|---|---|---|
+| **es-http** (native DLL + pipe worker lanes — the default) | WinHTTP (in-process / separate process) | **yes** (TLS 1.2+) | HTTP/1.1 | yes (warm pool) | yes (hard deadlines) | yes | yes | yes |
+| **es-http** (socket lane — the no-binaries fallback) | ExtendScript `Socket` | no (`https://` → `"unsupported"`) | HTTP/1.1 | no | best-effort | yes (JS) | no | no |
+| buraktamturk/adobe-javascript-http-client | ExtendScript `Socket` | **no** (author-documented) | HTTP/1.0 | no (author-documented) | no | no | no | no |
+| Raw ExtendScript `Socket` | `Socket` | no | HTTP/1.1 (hand-rolled) | no | no | manual | no | no |
+
+The comparison is honest: es-http's own socket lane shares the TLS
+limitation — that is exactly why the native and pipe lanes are the default,
+and why es-http's https-capable lanes (TLS 1.2+, measured at wrapper parity
+with each other, 0.071–0.078 ms vs 0.084–0.141 ms) are what make it the
+complete solution. Where the community client's documented TLS gap is the
+problem, es-http's native/pipe lanes are the answer.
 
 ---
 
