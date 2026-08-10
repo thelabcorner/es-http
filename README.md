@@ -25,8 +25,7 @@
 > [ESCHARS](https://github.com/thelabcorner/es-chars) — native bulk byte ops,
 > [ESPACK](https://github.com/thelabcorner/espack) — self-extracting
 > ExternalObject bundles, [ESOBF](https://github.com/thelabcorner/esobf) —
-> obfuscation, and [ArcFit.dev](https://arcfit.dev) — deterministic arc warp
-> for Illustrator. (es-http embeds ESON and ESB64's DLL-accelerated bundles;
+> obfuscation. (es-http embeds ESON and ESB64's DLL-accelerated bundles;
 > see [Vendored codecs](#vendored-codecs-json--base64--utf-8).)**
 
 ---
@@ -121,7 +120,7 @@ Result object on every path.
   image) fetches through the firewall; verified live: Wikipedia's W SVG,
   status 200, 2440 bytes, fetched with all firewall rules enabled and none
   modified (`docs/cli-transport.md`).
-- **Verified end-to-end** — 198/0 tests in both the ESM and IIFE lanes,
+- **Verified end-to-end** — 204/0 tests in both the ESM and IIFE lanes,
   native selftest 166/0, and a live Illustrator 30.6.0 gate that fetched
   the W SVG and placed it into a document as paths (pageDelta 1).
 
@@ -553,8 +552,8 @@ D1–D7 documented divergences; 103,711/0 base64/UTF-8). See
 | Check | Command | Result |
 |---|---|---|
 | Typecheck | `npx tsc --noEmit -p .` | 0 errors |
-| Test suite, ESM lane | `node test/harness.js --all` | **198 pass / 0 fail** |
-| Test suite, IIFE lane (shipping `dist/eshttp.jsx`) | `node test/harness.js --all` | **198 pass / 0 fail** |
+| Test suite, ESM lane | `node test/harness.js --all` | **204 pass / 0 fail** |
+| Test suite, IIFE lane (shipping `dist/eshttp.jsx`) | `node test/harness.js --all` | **204 pass / 0 fail** |
 | JSON differential vs ESON | `node test/parity/parity.mjs` | **753 / 0** (D1–D7 documented divergences as contracted) |
 | base64/UTF-8 differential vs ESB64 | `node test/parity/esb64-parity.mjs` | **103,711 / 0** |
 | Never-throw audit | `node test/parity/never-throw-audit.mjs` | **736 / 0** |
@@ -636,7 +635,7 @@ form in memory); prefer the native/cli lanes for production.
   process image. **No firewall rule is ever modified**; the child runs the
   same engine and speaks the same `http-v1` envelope; it is one-shot (claims
   one job, writes the `.done`, deletes the job). Job files live in
-  `%TEMP%`/`%TEMP%\opencode` (ArcFit's work-dir trust model) and are swept
+  `%TEMP%`/`%TEMP%\opencode` (the job-file work-dir trust model) and are swept
   at startup. The `done` path is validated against traversal; the job parser
   is defensive (line/file caps, unknown keys ignored).
 - **Never executes user scripts:** the accel bundles eval only their own
