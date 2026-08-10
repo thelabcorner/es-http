@@ -61,6 +61,30 @@ TLS, no HTTP parsing, no timeouts that can be trusted, and no way to reach
 (`meta.timeoutEnforced=false`), and there is no `fetch`, no `XHR`, and no
 native `JSON` global to lean on.
 
+**The state of ExtendScript HTTP before es-http.** For years the only real
+option was
+[buraktamturk/adobe-javascript-http-client](https://github.com/buraktamturk/adobe-javascript-http-client)
+— a client built directly on raw `Socket`. Its author documents the
+limitations plainly
+([issue #1](https://github.com/buraktamturk/buraktamturk-web/issues/1)):
+SSL/TLS is not supported ("Adobe's Socket class does not provide SSL
+support"), the library is not async, it speaks HTTP/1.0 only (no chunked
+responses), and there is no Keep-Alive — every call opens a new TCP
+connection. The practical consequence: **HTTPS from ExtendScript was
+effectively impossible.** Raw `Socket` shares every one of those limits and
+adds no HTTP parsing of its own.
+
+Thanks to **Burak Tamtürk** for showing the way with the first ExtendScript
+HTTP client — es-http stands on the shoulders of that earlier work and the
+community conversation it started.
+
+es-http exists to close that void. The **native and pipe lanes** bring real
+HTTPS (TLS 1.2+ via WinHTTP), HTTP/1.1, keep-alive (a warm pipe worker —
+measured 0.064 ms vs 2.819 ms for the one-shot spawn path, ~44x), plus
+timeouts, redirects, proxy, and gzip — while the **socket lane** remains the
+honest cleartext fallback for hosts with no binaries. For the detailed
+comparison, see [Alternatives](#alternatives).
+
 `es-http` fills the gap with one API over three transports that degrade
 automatically:
 
@@ -807,13 +831,18 @@ eshttp/
 - ExtendScript engine documentation and host behaviors:
   [docsforadobe](https://extendscript.docsforadobe.dev/) and the
   ExtendScript community (Jongware/JTG, Kasyan Servetsky, the ExtendScript
-  wiki) — the engine-quirk catalogue this library designs around.
-- ESON and ESB64 (thelabcorner) — the vendored JSON and base64/UTF-8 engines
+  wiki) - the engine-quirk catalogue this library designs around.
+- ESON and ESB64 (thelabcorner) - the vendored JSON and base64/UTF-8 engines
   (DLL-accelerated bundles), whose own corpora and WPT vectors pin the
   differential suites.
 - The Adobe ExternalObject direct-interface reference (canonical
-  `SoSharedLibDefs.h` samples from the CEP-Resources repo) — the native-abi
+  `SoSharedLibDefs.h` samples from the CEP-Resources repo) - the native-abi
   v2 shape.
+- [buraktamturk/adobe-javascript-http-client](https://github.com/buraktamturk/adobe-javascript-http-client)
+  (Burak Tamtürk) - the pioneer ExtendScript HTTP client, and the
+  reference point es-http builds upon; his
+  [issue documenting the Socket TLS gap](https://github.com/buraktamturk/buraktamturk-web/issues/1)
+  is the community conversation this library answers.
 
 ---
 
