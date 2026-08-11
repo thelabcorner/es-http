@@ -656,7 +656,7 @@ function esb64Manifest() {
     var accelDll = join(ROOT, '..', 'espack', 'vendor', 'ESB64Native.dll');
     if (existsSync(accelDll)) {
       var b = readFileSync(accelDll);
-      accel = { name: 'ESB64Native', version: '1', len: b.length, b64: b.toString('base64'), fileName: 'ESB64Native_v1.dll' };
+      accel = { name: 'ESB64Native', version: '2', len: b.length, b64: b.toString('base64'), fileName: 'ESB64Native_v2.dll' };
     }
   }
   return { format: 'espack-manifest', version: 1, bundleName: 'esb64', cacheDir: '', chunkSize: 24576, accel: accel, payloads: [] };
@@ -687,7 +687,7 @@ function buildMergedAccel(arch, cliExe, ipcDll, stageCalls, banner) {
   var eshttpManifest = join(DIST, '.eshttp-' + arch + '.manifest.json');
   var scratchBundle = join(DIST, '.eshttp-' + arch + '-scratch.jsx');
   execFileSync(process.execPath, [espackBuild, '--embed', cliExe, '--embed', ipcDll,
-    '--out', scratchBundle, '--name', 'eshttp', '--manifest-out', eshttpManifest, '--quiet'],
+    '--accel-version', '2', '--out', scratchBundle, '--name', 'eshttp', '--manifest-out', eshttpManifest, '--quiet'],
     { stdio: 'inherit' });
 
   // 2. The esb64 manifest (accel-only, generated locally - sibling Lane C emission pending).
