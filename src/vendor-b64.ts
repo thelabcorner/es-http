@@ -141,7 +141,10 @@ function esb64Facade(): any {
         // so this branch is skipped there.
         publishTarget = global;
         if (dollar) {
-          try { dollar.global = publishTarget; } catch (e1) {}
+          // Types-for-Adobe marks $.global readonly; the Node ESM lane stages a
+          // plain mutable $ stub and this assignment is skipped on real hosts
+          // ($.global is already set). Narrow cast, emitted JS unchanged.
+          try { (dollar as any).global = publishTarget; } catch (e1) {}
         } else {
           // Bare Node (no staged $): stage a throwaway $ so the bundle's
           // publish footer finds $.global; deleted after the read.
@@ -163,7 +166,7 @@ function esb64Facade(): any {
           try { global.$ = undefined; } catch (e2b) {}
         }
       } else if (dollar) {
-        try { dollar.global = savedGlobal; } catch (e2) {}
+        try { (dollar as any).global = savedGlobal; } catch (e2) {}
       }
     } catch (e) {
       _esb64 = null;

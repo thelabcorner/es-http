@@ -6,8 +6,8 @@
  * worker to run the http request out-of-process (the firewall-escape lane).
  *
  * ABI: canonical ExtendScript ExternalObject direct-interface
- *   long fn(TaggedData* argv, long argc, TaggedData* retval)
- * (SoSharedLibDefs.h ESFunction; live-verified on Illustrator 30.6.0 via
+ *   long fn(esabi_value* argv, long argc, esabi_value* retval)
+ * (pinned ESABI v0.3.0; Windows LONG32 profile live-verified on Illustrator 30.6.0 via
  * the sibling ESON prototype). Exports (exactly 5):
  *   ESInitialize  -> signature metadata string
  *   ESGetVersion  -> 1 (ExternalObject.version)
@@ -24,10 +24,10 @@
  *     timeout) so a hung/crashed worker can never block Illustrator's UI
  *     thread indefinitely.
  *   - Every failure path returns a BOUNDED normalized report string
- *     (kTypeString) with a machine-readable errClass; NO negative (fatal)
- *     kESErr* codes are ever returned.
+ *     (ESABI_TYPE_STRING) with a machine-readable errClass; NO negative (fatal)
+ *     negative ESABI_ERR_* statuses are ever returned.
  *
- * Report format (kTypeString -> JSX, LF-separated key=value):
+ * Report format (ESABI_TYPE_STRING -> JSX, LF-separated key=value):
  *   protocol=ESHTTP_IPC_1
  *   success=1|0
  *   op=<op>
@@ -125,9 +125,8 @@ typedef struct OVERLAPPED_S {
 } OVERLAPPED_S;
 
 #include "eshttp-ipc.h"
-#include "eshttp.h"   /* TaggedData, kType*, kESErr* (type-only, CRT-free) */
+#include "eshttp.h"   /* ESABI value/type/status contract; CRT-free */
 
-#define ESHTTP_IPC_API __declspec(dllexport)
 #define ESHTTP_REQ_ID_HEX 32
 #define ESHTTP_REPORT_OP_MAX 64
 #define ESHTTP_FIELD_MESSAGE_MAX 512
@@ -276,12 +275,11 @@ static char *dup_cstr(const char *s) {
     return out;
 }
 
-static long return_string(TaggedData *retval, const char *s) {
+static long return_string(esabi_value *retval, const char *s) {
     char *out = dup_cstr(s);
-    if (!out) return kESErrNoMemory;
-    retval->type = kTypeString;
-    retval->data.string = out;
-    return kESErrOK;
+    if (!out) return ESABI_ERR_OUT_OF_MEMORY;
+    esabi_value_set_string(retval, out);
+    return ESABI_OK;
 }
 
 /* Per-request invocation id: 32 hex chars, fresh on every request, echoed
@@ -673,7 +671,7 @@ static int pipe_transact(const char *op, const char *payload, DWORD timeoutMs,
 /* normalized report to JSX                                            */
 /* ------------------------------------------------------------------ */
 
-static long report_emit(TaggedData *retval, const char *op, int success,
+static long report_emit(esabi_value *retval, const char *op, int success,
                         const char *errClass, const char *message,
                         DWORD winerr, long workerAbi, const char *buildId,
                         unsigned long long pid, unsigned long long uptimeMs,
@@ -737,7 +735,7 @@ static const char *transport_message(const char *errClass) {
 }
 
 /* Single-flight guard wrapper. */
-static long request_impl(TaggedData *retval, const char *op,
+static long request_impl(esabi_value *retval, const char *op,
                          const char *payload, DWORD timeoutMs) {
     static char resp[ESHTTP_IPC_RESP_MAX + 1]; /* static: bounded, single-flight */
     char requestId[ESHTTP_REQ_ID_HEX + 1];
@@ -797,7 +795,7 @@ static long request_impl(TaggedData *retval, const char *op,
 /* Minimal DLL entry point: the freestanding build has no CRT
    DllMainCRTStartup, so the linker is pointed at this directly
    (/entry:DllMain). Returning TRUE on PROCESS_ATTACH is the whole job. */
-ESHTTP_IPC_API BOOL WINAPI DllMain(void *hinst, DWORD reason, void *reserved) {
+BOOL WINAPI DllMain(void *hinst, DWORD reason, void *reserved) {
     (void)hinst;
     (void)reason;
     (void)reserved;
@@ -805,50 +803,49 @@ ESHTTP_IPC_API BOOL WINAPI DllMain(void *hinst, DWORD reason, void *reserved) {
 }
 
 /* Signature string: ONE business method, 3 args (op_s, payload_s, timeout).
- * The timeout is declared _d (arrives as kTypeInteger per the skill's
+ * The timeout is declared _d (arrives as ESABI_TYPE_INTEGER per the skill's
  * "signature codes cast argument types" — accept the numeric family). */
-ESHTTP_IPC_API char *ESInitialize(TaggedData *argv, long argc) {
+ESABI_INITIALIZE_FUNCTION {
     (void)argv;
     (void)argc;
     return "eshttp_pipe_request_ssd";
 }
 
-ESHTTP_IPC_API long ESGetVersion(void) {
+ESABI_VERSION_FUNCTION {
     return 1;
 }
 
 /* MUST match this DLL's allocator exactly: every returned buffer comes from
    HeapAlloc(GetProcessHeap()) -> HeapFree. Never free() a static buffer. */
-ESHTTP_IPC_API void ESFreeMem(void *p) {
-    if (p) HeapFree(GetProcessHeap(), 0, p);
+ESABI_FREE_FUNCTION {
+    if (pointer) HeapFree(GetProcessHeap(), 0, pointer);
 }
 
-ESHTTP_IPC_API void ESTerminate(void) {
+ESABI_TERMINATE_FUNCTION {
     /* no persistent native state to release */
 }
 
-/* eshttp_pipe_request(op, payload, timeoutMs) -> kTypeString report.
- *   argv[0] op        kTypeString (ping|status|version|quit|echo|request)
- *   argv[1] payload   kTypeString (op-specific; for request = the LF job
+/* eshttp_pipe_request(op, payload, timeoutMs) -> ESABI_TYPE_STRING report.
+ *   argv[0] op        ESABI_TYPE_STRING (ping|status|version|quit|echo|request)
+ *   argv[1] payload   ESABI_TYPE_STRING (op-specific; for request = the LF job
  *                     body or a jobFile=<path> reference)
- *   argv[2] timeoutMs numeric (kTypeInteger/kTypeDouble/kTypeUInteger),
+ *   argv[2] timeoutMs numeric (ESABI_TYPE_INTEGER/ESABI_TYPE_DOUBLE/ESABI_TYPE_UINTEGER),
  *                     clamped to [MIN, MAX]; <=0 -> default
- * Returns kESErrOK with a bounded kTypeString report, or
- * kESErrBadArgumentList (catchable). NEVER returns a negative code. */
-ESHTTP_IPC_API long eshttp_pipe_request(TaggedData *argv, long argc,
-                                        TaggedData *retval) {
+ * Returns ESABI_OK with a bounded ESABI_TYPE_STRING report, or
+ * ESABI_ERR_BAD_ARGUMENTS (catchable). NEVER returns a negative code. */
+ESABI_DIRECT_FUNCTION(eshttp_pipe_request) {
     long t;
     DWORD timeoutMs;
-    if (argc < 2 || !argv[0].data.string || !argv[1].data.string)
-        return kESErrBadArgumentList;
-    if (argv[0].type != kTypeString || argv[1].type != kTypeString)
-        return kESErrBadArgumentList;
+    if (argc < 2 || !argv[0].payload.string_value || !argv[1].payload.string_value)
+        return ESABI_ERR_BAD_ARGUMENTS;
+    if (argv[0].type != ESABI_TYPE_STRING || argv[1].type != ESABI_TYPE_STRING)
+        return ESABI_ERR_BAD_ARGUMENTS;
     /* numeric timeout: accept the whole numeric family (skill: signature
-       codes cast args; _d arrives as kTypeInteger on this host) */
+       codes cast args; _d arrives as ESABI_TYPE_INTEGER on this host) */
     if (argc >= 3) {
-        if (argv[2].type == kTypeDouble) t = (long)argv[2].data.fltval;
-        else if (argv[2].type == kTypeInteger || argv[2].type == kTypeUInteger)
-            t = argv[2].data.intval;
+        if (argv[2].type == ESABI_TYPE_DOUBLE) t = (long)argv[2].payload.double_value;
+        else if (argv[2].type == ESABI_TYPE_INTEGER || argv[2].type == ESABI_TYPE_UINTEGER)
+            t = argv[2].payload.signed_value;
         else t = ESHTTP_IPC_TIMEOUT_DEFAULT_MS;
     } else {
         t = ESHTTP_IPC_TIMEOUT_DEFAULT_MS;
@@ -857,6 +854,6 @@ ESHTTP_IPC_API long eshttp_pipe_request(TaggedData *argv, long argc,
     if (t < ESHTTP_IPC_TIMEOUT_MIN_MS) t = ESHTTP_IPC_TIMEOUT_MIN_MS;
     if (t > ESHTTP_IPC_TIMEOUT_MAX_MS) t = ESHTTP_IPC_TIMEOUT_MAX_MS;
     timeoutMs = (DWORD)t;
-    return request_impl(retval, argv[0].data.string, argv[1].data.string,
+    return request_impl(retval, argv[0].payload.string_value, argv[1].payload.string_value,
                         timeoutMs);
 }

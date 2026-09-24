@@ -145,7 +145,7 @@ string, signed 32-bit). The driver calls it with the op name, the payload
 the deadline; it returns a bounded normalized report (`ESHTTP_IPC_REPORT_MAX`
 8192, `_BRIDGE_PROTO = "ESHTTP_IPC_1"`). Hard deadlines at every phase,
 single-flight CAS, handshake gate before any op, message-mode reads,
-never-negative `kESErr*`, bounded `errClass` reports. Binary sizes: x64
+never-negative `ESABI_ERR_*`, bounded `errClass` reports. Binary sizes: x64
 15,872 B, x86 11,776 B. Live probe (Illustrator 30.6.0 COM, both spawn
 modes): load ok, version 1, no RPC_E_SERVERFAULT; ping/status/version/echo/
 request/unknown-op/quit ALL PASS — request returned the http-v1 envelope

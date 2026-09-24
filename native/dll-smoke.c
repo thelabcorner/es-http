@@ -1,7 +1,6 @@
 /* dll-smoke.c — load eshttp2-x64.dll dynamically and exercise the canonical
  * direct-interface ABI (native-abi v2): 4 ES* + 4 business exports, all
- * driven with the documented `long fn(TaggedData*, long, TaggedData*)`
- * shape (SoSharedLibDefs.h ESFunction).
+ * driven with the pinned ESABI v0.3.0 direct-function shape.
  * Temp verification tool (not part of deliverables).
  *
  * Build (x64, MSVC):
@@ -14,37 +13,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* --- canonical ABI (mirror of eshttp.h / SoSharedLibDefs.h) --- */
-typedef struct TaggedData TaggedData;
-struct TaggedData {
-    union {
-        long intval;
-        double fltval;
-        char* string;
-        void* hObject;
-    } data;
-    long type;
-    long filler;
-};
-#define kTypeUndefined 0
-#define kTypeDouble    3
-#define kTypeString    4
-#define kTypeInteger   123
-#define kESErrOK       0
-#define kESErrBadArgumentList 20
+#include <esabi/esabi.h>
 
-typedef char*  (*es_init_fn)(TaggedData*, long);
-typedef long   (*es_getver_fn)(void);
-typedef void   (*es_freemem_fn)(void*);
-typedef void   (*es_terminate_fn)(void);
-typedef long   (*es_http_fn)(TaggedData*, long, TaggedData*);
+typedef char* (ESABI_CALL *es_init_fn)(esabi_value*, esabi_long);
+typedef esabi_long (ESABI_CALL *es_getver_fn)(void);
+typedef void (ESABI_CALL *es_freemem_fn)(void*);
+typedef void (ESABI_CALL *es_terminate_fn)(void);
+typedef esabi_error (ESABI_CALL *es_http_fn)(esabi_value*, esabi_long, esabi_value*);
 
 static const char* tag_name(long t) {
     switch (t) {
-        case kTypeUndefined: return "undefined(0)";
-        case kTypeDouble:    return "double(3)";
-        case kTypeString:    return "string(4)";
-        case kTypeInteger:   return "integer(123)";
+        case ESABI_TYPE_UNDEFINED: return "undefined(0)";
+        case ESABI_TYPE_DOUBLE:    return "double(3)";
+        case ESABI_TYPE_STRING:    return "string(4)";
+        case ESABI_TYPE_INTEGER:   return "integer(123)";
         default: { static char b[32]; snprintf(b, sizeof(b), "tag(%ld)", t); return b; }
     }
 }
@@ -73,88 +55,88 @@ int main(void) {
     printf("ESInitialize=%s\n", sig ? sig : "(null)");
     if (sig) { ESFreeMem(sig); }
 
-    /* eshttp_version(0) -> kTypeString */
+    /* eshttp_version(0) -> ESABI_TYPE_STRING */
     {
-        TaggedData argv[1], retval;
+        esabi_value argv[1], retval;
         memset(argv, 0, sizeof(argv));
-        argv[0].type = kTypeDouble; argv[0].data.fltval = 0.0;
+        argv[0].type = ESABI_TYPE_DOUBLE; argv[0].payload.double_value = 0.0;
         memset(&retval, 0, sizeof(retval));
         long rc = eshttp_version(argv, 1, &retval);
         printf("version(0): rc=%ld type=%s value=%s\n", rc, tag_name(retval.type),
-               retval.type == kTypeString ? (retval.data.string ? retval.data.string : "(null)") : "-");
-        if (retval.type == kTypeString) { ESFreeMem(retval.data.string); }
+               retval.type == ESABI_TYPE_STRING ? (retval.payload.string_value ? retval.payload.string_value : "(null)") : "-");
+        if (retval.type == ESABI_TYPE_STRING) { ESFreeMem(retval.payload.string_value); }
     }
 
-    /* eshttp_available(0) -> kTypeInteger 1/0 */
+    /* eshttp_available(0) -> ESABI_TYPE_INTEGER 1/0 */
     {
-        TaggedData argv[1], retval;
+        esabi_value argv[1], retval;
         memset(argv, 0, sizeof(argv));
-        argv[0].type = kTypeDouble; argv[0].data.fltval = 0.0;
+        argv[0].type = ESABI_TYPE_DOUBLE; argv[0].payload.double_value = 0.0;
         memset(&retval, 0, sizeof(retval));
         long rc = eshttp_available(argv, 1, &retval);
-        printf("available(0): rc=%ld type=%s value=%ld\n", rc, tag_name(retval.type), retval.data.intval);
+        printf("available(0): rc=%ld type=%s value=%ld\n", rc, tag_name(retval.type), retval.payload.signed_value);
     }
 
-    /* eshttp_request(m,u,h,b,o) -> kTypeString envelope */
+    /* eshttp_request(m,u,h,b,o) -> ESABI_TYPE_STRING envelope */
     {
-        TaggedData argv[5], retval;
+        esabi_value argv[5], retval;
         const char* strs[5] = { "GET", "ftp://example.com/", "{}", "", "{}" };
         int i;
         memset(argv, 0, sizeof(argv));
         for (i = 0; i < 5; i++) {
-            argv[i].type = kTypeString;
-            argv[i].data.string = (char*)strs[i];
+            argv[i].type = ESABI_TYPE_STRING;
+            argv[i].payload.string_value = (char*)strs[i];
         }
         memset(&retval, 0, sizeof(retval));
         long rc = eshttp_request(argv, 5, &retval);
         printf("request(ftp) rc=%ld type=%s\n", rc, tag_name(retval.type));
-        if (retval.type == kTypeString) {
-            printf("  env=%s\n", retval.data.string ? retval.data.string : "(null)");
-            ESFreeMem(retval.data.string);
+        if (retval.type == ESABI_TYPE_STRING) {
+            printf("  env=%s\n", retval.payload.string_value ? retval.payload.string_value : "(null)");
+            ESFreeMem(retval.payload.string_value);
         }
     }
 
     /* failure path: transport error (connect refused) -> envelope */
     {
-        TaggedData argv[5], retval;
+        esabi_value argv[5], retval;
         const char* strs[5] = { "GET", "http://127.0.0.1:9/x", "{}", "",
                                 "{\"proxy\":\"direct\",\"timeoutMs\":5000}" };
         int i;
         memset(argv, 0, sizeof(argv));
         for (i = 0; i < 5; i++) {
-            argv[i].type = kTypeString;
-            argv[i].data.string = (char*)strs[i];
+            argv[i].type = ESABI_TYPE_STRING;
+            argv[i].payload.string_value = (char*)strs[i];
         }
         memset(&retval, 0, sizeof(retval));
         long rc = eshttp_request(argv, 5, &retval);
         printf("request(refused) rc=%ld type=%s\n", rc, tag_name(retval.type));
-        if (retval.type == kTypeString) {
-            const char* e = retval.data.string ? retval.data.string : "";
+        if (retval.type == ESABI_TYPE_STRING) {
+            const char* e = retval.payload.string_value ? retval.payload.string_value : "";
             printf("  has-error-code=%s\n", strstr(e, "\"code\":\"connect\"") ? "yes" : "no");
-            ESFreeMem(retval.data.string);
+            ESFreeMem(retval.payload.string_value);
         }
     }
 
-    /* bad arg count -> catchable kESErrBadArgumentList, never negative */
+    /* bad arg count -> catchable ESABI_ERR_BAD_ARGUMENTS, never negative */
     {
-        TaggedData argv[1], retval;
+        esabi_value argv[1], retval;
         memset(argv, 0, sizeof(argv));
-        argv[0].type = kTypeString; argv[0].data.string = (char*)"GET";
+        argv[0].type = ESABI_TYPE_STRING; argv[0].payload.string_value = (char*)"GET";
         memset(&retval, 0, sizeof(retval));
         long rc = eshttp_request(argv, 1, &retval);
-        printf("request(1 arg) rc=%ld (expect %d)\n", rc, kESErrBadArgumentList);
+        printf("request(1 arg) rc=%ld (expect %d)\n", rc, ESABI_ERR_BAD_ARGUMENTS);
     }
 
-    /* last_error(0) -> kTypeString (malloc'd copy) */
+    /* last_error(0) -> ESABI_TYPE_STRING (malloc'd copy) */
     {
-        TaggedData argv[1], retval;
+        esabi_value argv[1], retval;
         memset(argv, 0, sizeof(argv));
-        argv[0].type = kTypeDouble; argv[0].data.fltval = 0.0;
+        argv[0].type = ESABI_TYPE_DOUBLE; argv[0].payload.double_value = 0.0;
         memset(&retval, 0, sizeof(retval));
         long rc = eshttp_last_error(argv, 1, &retval);
         printf("last_error(0): rc=%ld type=%s len=%lu\n", rc, tag_name(retval.type),
-               retval.type == kTypeString ? (unsigned long)strlen(retval.data.string ? retval.data.string : "") : 0UL);
-        if (retval.type == kTypeString) { ESFreeMem(retval.data.string); }
+               retval.type == ESABI_TYPE_STRING ? (unsigned long)strlen(retval.payload.string_value ? retval.payload.string_value : "") : 0UL);
+        if (retval.type == ESABI_TYPE_STRING) { ESFreeMem(retval.payload.string_value); }
     }
 
     ESTerminate();

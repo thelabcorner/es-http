@@ -191,7 +191,7 @@ module.exports = function (suite, env) {
     });
 
     // =====================================================================
-    // native-abi-v2 (T6/T7): eshttp_free REMOVED — the host frees kTypeString
+    // native-abi-v2 (T6/T7): eshttp_free REMOVED — the host frees ESABI_TYPE_STRING
     // returns via ESFreeMem. The wrapper must NEVER call a free (v1 caller-
     // frees was the double-free flaw). The stub records any (nonexistent)
     // free invocations in nativeState.freeCalls and has NO eshttp_free

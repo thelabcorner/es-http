@@ -17,6 +17,7 @@
 // Host-global access is typeof-guarded at CALL time only (never at
 // module-eval), per the build contract.
 import { Defaults, NativeCache } from './types';
+import { trim } from './utils';
 
 /** Internal defaults. eshttp.DEFAULTS is a replacement-safe snapshot of
  *  these; per-call opts always win. */
@@ -100,7 +101,7 @@ function platformToken(): string {
     } else {
       plat = os;
     }
-    return plat.replace(/[\r\n()]/g, "").trim();
+    return trim(plat.replace(/[\r\n()]/g, ""));
   } catch (e) {
     return "";
   }

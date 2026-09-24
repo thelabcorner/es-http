@@ -135,7 +135,10 @@ function esonFacade(): any {
       if (!publishTarget && typeof global !== "undefined") {
         publishTarget = global;
         if (dollar) {
-          try { dollar.global = publishTarget; } catch (e1) {}
+          // Types-for-Adobe marks $.global readonly; the Node ESM lane stages a
+          // plain mutable $ stub and this assignment is skipped on real hosts
+          // ($.global is already set). Narrow cast, emitted JS unchanged.
+          try { (dollar as any).global = publishTarget; } catch (e1) {}
         } else {
           try {
             global.$ = { global: publishTarget };
@@ -155,7 +158,7 @@ function esonFacade(): any {
           try { global.$ = undefined; } catch (e2b) {}
         }
       } else if (dollar) {
-        try { dollar.global = savedGlobal; } catch (e2) {}
+        try { (dollar as any).global = savedGlobal; } catch (e2) {}
       }
     } catch (e) {
       _eson = null;
@@ -265,15 +268,23 @@ function plainify(value: any, stack: any[]): any {
           continue;                              // omitted in objects
         }
         if (k === "__proto__") {
-          try {
-            Object.defineProperty(o, k, {
-              value: plainify(v, stack),
-              writable: true,
-              enumerable: true,
-              configurable: true
-            });
-          } catch (e) {
-            // best-effort: drop the key rather than pollute the prototype
+          // Own-data-property guard: a plain assignment to "__proto__" would
+          // retarget the object's prototype on engines with the legacy
+          // accessor, so create an own data property instead. Descriptor
+          // support is feature-guarded (the ESTC-verified guard form); when
+          // the engine has no Object.defineProperty the documented
+          // best-effort fallback is to DROP the key rather than pollute.
+          if (typeof Object.defineProperty === "function") {
+            try {
+              Object.defineProperty(o, k, {
+                value: plainify(v, stack),
+                writable: true,
+                enumerable: true,
+                configurable: true
+              });
+            } catch (e) {
+              // best-effort: drop the key rather than pollute the prototype
+            }
           }
         } else {
           o[k] = plainify(v, stack);

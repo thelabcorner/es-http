@@ -7,7 +7,7 @@
 // socket. The ONLY changes are the T5 sponsor-mandated rename (lib:eshttp +
 // eshttp_* symbols) and the T6 native-abi-v2 boundary:
 //   - eshttp_free is GONE (v1 caller-frees was the double-free flaw). The
-//     host frees kTypeString returns via ESFreeMem (= free) automatically.
+//     host frees ESABI_TYPE_STRING returns via ESFreeMem (= free) automatically.
 //   - no-arg methods (eshttp_version / eshttp_available / eshttp_last_error)
 //     are declared with _f signatures, so the wrapper MUST pass a dummy 0.
 // The C source in native/ is out of scope — do not edit it.
@@ -57,7 +57,7 @@ export function probeNative(): NativeCache {
   if (typeof ExternalObject === "undefined") { return cache; }
   try {
     // __cdecl is the ExtendScript default for ExternalObject.
-    var accel = new ExternalObject("lib:eshttp");
+    var accel: any = new ExternalObject("lib:eshttp");
     if (!accel) { return cache; }
     if (typeof accel.eshttp_version === "function") {
       // native-abi-v2: eshttp_version is declared _f (no-arg methods get a
@@ -138,7 +138,7 @@ export function nativeRequest(ctx: RequestContext): any {
     };
   }
   // native-abi-v2: NO explicit eshttp_free — the host frees the returned
-  // kTypeString via ESFreeMem (= free). Calling a free export here would be
+  // ESABI_TYPE_STRING via ESFreeMem (= free). Calling a free export here would be
   // a double-free (v1's flaw); eshttp_free no longer exists in the export
   // set.
   if (envStr === "null" || envStr === "" || envStr === "undefined") {

@@ -18,10 +18,9 @@
  * Selftest (statically linked, no DLL):
  *   cl /nologo /TC /MT /O2 /D ESHTTP_STATIC selftest.c /Fe:eshttp-selftest.exe
  *
- * ABI (native-abi v2, pinned): canonical ExtendScript ExternalObject
- * DIRECT-INTERFACE shape `long fn(TaggedData* argv, long argc,
- * TaggedData* retval)` (SoSharedLibDefs.h ESFunction), live-verified on
- * Illustrator 30.6.0 via the sibling ESON prototype (eson/native/eson_json.c).
+ * ABI (native-abi v2, pinned): ExtendScript ExternalObject direct interface
+ * through ESABI v0.3.0 (`esabi_value`, `esabi_long`, `esabi_error`, ESABI_CALL),
+ * live-verified on Illustrator 30.6.0.
  * ESInitialize signature string (FINAL):
  *   "eshttp_request_sssss,eshttp_last_error_f,eshttp_version_f,eshttp_available_f"
  *   — no-arg methods declared with a dummy `_f` (bare no-arg names are
@@ -29,7 +28,7 @@
  *   wrapper passes a dummy 0. eshttp_free is REMOVED (v2).
  *
  * Memory rules (native-abi v2 §4.4):
- *   - The HOST frees every kTypeString return via ESFreeMem (= free). The
+ *   - The HOST frees every ESABI_TYPE_STRING return via ESFreeMem (= free). The
  *     DLL NEVER returns a static buffer: eshttp_version/eshttp_last_error/
  *     eshttp_request all return malloc'd copies. No caller-side free.
  *   - Envelopes are emitted as pure-ASCII JSON (see below).
@@ -1297,7 +1296,7 @@ static void errmsg(const errinfo* ei, DWORD code, const char* host, int port,
 /* ==========================================================================
  * Backend registry + last error (DLL-owned state)
  * ========================================================================== */
-/* native-abi v2: NO caller-side free. The host frees every kTypeString
+/* native-abi v2: NO caller-side free. The host frees every ESABI_TYPE_STRING
  * return via ESFreeMem (= free). The old PTR_SLOTS registry was the v1
  * caller-frees mechanism and is removed (it also became a double-free
  * hazard once the host freed via ESFreeMem). */
@@ -2193,44 +2192,34 @@ static const char* engine(
 
 /* ==========================================================================
  * Exported API (native-abi v2 — exactly 8 exports: 4 ES* + 4 business)
- * Canonical ExtendScript ExternalObject direct-interface shape:
- *   long fn(TaggedData* argv, long argc, TaggedData* retval)
- * (SoSharedLibDefs.h ESFunction typedef). The host calls every export with
+ * ExtendScript ExternalObject direct-interface shape from ESABI v0.3.0.
+ * The host calls every business export with
  * (argv, argc, retval); ESInitialize's signature string drives arg casting.
  * ========================================================================== */
 
-/* --- TaggedData helpers (ESON eson_json.c pattern) --- */
-static void abi_clear_retval(TaggedData* retval) {
-    if (!retval) return;
-    retval->data.intval = 0;
-    retval->type = kTypeUndefined;
-    retval->filler = 0;
+/* --- esabi_value helpers (ESON eson_json.c pattern) --- */
+static void abi_clear_retval(esabi_value* retval) {
+    esabi_value_set_undefined(retval);
 }
 
-/* kTypeString (4): the returned buffer must be malloc'd — ExtendScript frees
+/* ESABI_TYPE_STRING (4): the returned buffer must be malloc'd — ExtendScript frees
  * it via ESFreeMem (this DLL's ESFreeMem = free). */
-static void abi_set_string(TaggedData* retval, char* value) {
-    if (!retval) return;
-    retval->data.string = value ? value : (char*)"";
-    retval->type = kTypeString;
-    retval->filler = 0;
+static void abi_set_string(esabi_value* retval, char* value) {
+    esabi_value_set_string(retval, value ? value : (char*)"");
 }
 
-/* kTypeInteger (123): JS receives a number (data.intval). Verified. */
-static void abi_set_integer(TaggedData* retval, long value) {
-    if (!retval) return;
-    retval->data.intval = value;
-    retval->type = kTypeInteger;
-    retval->filler = 0;
+/* ESABI_TYPE_INTEGER (123): JS receives the signed 32-bit numeric payload. */
+static void abi_set_integer(esabi_value* retval, long value) {
+    esabi_value_set_i32(retval, (esabi_i32)value);
 }
 
-/* Read a kTypeString argument per the declared _s signature cast. Returns 0
+/* Read a ESABI_TYPE_STRING argument per the declared _s signature cast. Returns 0
  * (and leaves *value untouched) when the arg is absent or not a string. */
-static int abi_string_arg(TaggedData* argv, long argc, long index,
+static int abi_string_arg(esabi_value* argv, esabi_long argc, esabi_long index,
                           const char** value) {
     if (!argv || index < 0 || index >= argc) return 0;
-    if (argv[index].type != kTypeString) return 0; /* _s signature cast */
-    *value = argv[index].data.string ? argv[index].data.string : "";
+    if (argv[index].type != ESABI_TYPE_STRING) return 0; /* _s signature cast */
+    *value = argv[index].payload.string_value ? argv[index].payload.string_value : "";
     return 1;
 }
 
@@ -2240,14 +2229,14 @@ static int abi_string_arg(TaggedData* argv, long argc, long index,
  * dummy `_f` (bare no-arg names are unreliable per the skill; ESON uses _f
  * for all no-arg methods). Malloc'd — freed via ESFreeMem like any returned
  * string (ESON verified pattern). */
-ESHTTP_API char* ESHTTP_CALL ESInitialize(TaggedData* argv, long argc) {
+ESHTTP_API char* ESHTTP_CALL ESInitialize(esabi_value* argv, esabi_long argc) {
     (void)argv; (void)argc;
     return str_dup("eshttp_request_sssss,eshttp_last_error_f,"
                    "eshttp_version_f,eshttp_available_f");
 }
 
 /* Version exposed as the read-only ExternalObject.version property (= 1). */
-ESHTTP_API long ESHTTP_CALL ESGetVersion(void) { return 1; }
+ESHTTP_API esabi_long ESHTTP_CALL ESGetVersion(void) { return 1; }
 
 /* Release a returned buffer. MUST match the DLL's allocator (free). */
 ESHTTP_API void ESHTTP_CALL ESFreeMem(void* p) { free(p); }
@@ -2257,11 +2246,11 @@ ESHTTP_API void ESHTTP_CALL ESTerminate(void) { session_cache_cleanup(); }
 
 /* --- business methods (direct-interface shape) --- */
 
-/* eshttp_request(m, u, h, b, o) -> kTypeString envelope. 5 kTypeString args
- * per the _sssss signature cast. Returns kESErrOK or kESErrBadArgumentList
+/* eshttp_request(m, u, h, b, o) -> ESABI_TYPE_STRING envelope. 5 ESABI_TYPE_STRING args
+ * per the _sssss signature cast. Returns ESABI_OK or ESABI_ERR_BAD_ARGUMENTS
  * (catchable). Never returns a negative code. */
-ESHTTP_API long ESHTTP_CALL eshttp_request(
-    TaggedData* argv, long argc, TaggedData* retval) {
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_request(
+    esabi_value* argv, esabi_long argc, esabi_value* retval) {
 
     const char* method = NULL, *url = NULL, *headers_json = NULL,
                *body = NULL, *opts_json = NULL;
@@ -2272,7 +2261,7 @@ ESHTTP_API long ESHTTP_CALL eshttp_request(
         !abi_string_arg(argv, argc, 2, &headers_json) ||
         !abi_string_arg(argv, argc, 3, &body) ||
         !abi_string_arg(argv, argc, 4, &opts_json)) {
-        return kESErrBadArgumentList; /* catchable (>= 0) */
+        return ESABI_ERR_BAD_ARGUMENTS; /* catchable (>= 0) */
     }
     env = engine(method, url, headers_json, body, opts_json);
     if (!env) {
@@ -2281,38 +2270,38 @@ ESHTTP_API long ESHTTP_CALL eshttp_request(
          * the host requires a set retval; negative codes are fatal). */
         char* msg = str_dup(g_last_error[0] ? g_last_error
                                             : "eshttp native backend unavailable");
-        if (!msg) { return kESErrOK; /* retval stays undefined */ }
+        if (!msg) { return ESABI_OK; /* retval stays undefined */ }
         abi_set_string(retval, msg);
-        return kESErrOK;
+        return ESABI_OK;
     }
     /* env is a malloc'd/calloc'd envelope — the host frees it via ESFreeMem. */
     abi_set_string(retval, (char*)env);
-    return kESErrOK;
+    return ESABI_OK;
 }
 
-/* eshttp_last_error(0) -> kTypeString (malloc'd copy of the last error).
+/* eshttp_last_error(0) -> ESABI_TYPE_STRING (malloc'd copy of the last error).
  * The v1 DLL-owned static buffer must NOT be returned (the host would free
  * it via ESFreeMem — returning a static buffer would be freed illegally). */
-ESHTTP_API long ESHTTP_CALL eshttp_last_error(
-    TaggedData* argv, long argc, TaggedData* retval) {
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_last_error(
+    esabi_value* argv, esabi_long argc, esabi_value* retval) {
     (void)argv; (void)argc;
     abi_clear_retval(retval);
     abi_set_string(retval, str_dup(g_last_error));
-    return kESErrOK;
+    return ESABI_OK;
 }
 
-/* eshttp_version(0) -> kTypeString (malloc'd copy of the version string). */
-ESHTTP_API long ESHTTP_CALL eshttp_version(
-    TaggedData* argv, long argc, TaggedData* retval) {
+/* eshttp_version(0) -> ESABI_TYPE_STRING (malloc'd copy of the version string). */
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_version(
+    esabi_value* argv, esabi_long argc, esabi_value* retval) {
     (void)argv; (void)argc;
     abi_clear_retval(retval);
     abi_set_string(retval, str_dup(ESHTTP_VERSION));
-    return kESErrOK;
+    return ESABI_OK;
 }
 
-/* eshttp_available(0) -> kTypeInteger 1/0 (WinHTTP backend probe). */
-ESHTTP_API long ESHTTP_CALL eshttp_available(
-    TaggedData* argv, long argc, TaggedData* retval) {
+/* eshttp_available(0) -> ESABI_TYPE_INTEGER 1/0 (WinHTTP backend probe). */
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_available(
+    esabi_value* argv, esabi_long argc, esabi_value* retval) {
     HINTERNET h;
     long ok = 0;
     (void)argv; (void)argc;
@@ -2324,7 +2313,7 @@ ESHTTP_API long ESHTTP_CALL eshttp_available(
         ok = 1;
     }
     abi_set_integer(retval, ok);
-    return kESErrOK;
+    return ESABI_OK;
 }
 
 /* ==========================================================================

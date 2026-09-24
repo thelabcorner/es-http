@@ -1,11 +1,7 @@
 # native/BUILD.md — eshttp.dll + selftest build & run
 
 Build guide for the eshttp native accelerator (`native/eshttp.c` / `eshttp.h`).
-Contract: `docs/native-abi.md` (contracts/native-abi-v2, binding). ABI header
-`eshttp.h` implements **exactly 8 exports** (see §2 of native-abi.md) — 4
-mandatory ES* lifecycle exports + 4 business methods, canonical
-ExternalObject DIRECT-INTERFACE shape `long fn(TaggedData*, long,
-TaggedData*)` — do not add, remove, or rename them.
+Contract: `docs/native-abi.md` (contracts/native-abi-v2, binding). ESABI v0.3.0 (`deps/esabi`) is the sole ExternalObject ABI authority; `eshttp.h` defines only ESHTTP's API/import-export policy. The main DLL exposes **exactly 8 exports** — 4 lifecycle + 4 business methods — using `esabi_value`, `esabi_long`, `esabi_error`, and `ESABI_CALL`.
 
 Two artifacts come out of this directory:
 
@@ -18,7 +14,7 @@ Two artifacts come out of this directory:
 deliverables (not shipped, not committed to a release). `probe.exe` exercises
 `url_parse`/`url_resolve` via the `eshttp_st_*` hooks; `dll-smoke.exe` loads
 the built `eshttp2-x64.dll` at runtime and drives all 8 exports through the
-real canonical ABI (TaggedData marshalling).
+same pinned ESABI value/calling-convention definitions used by the DLL.
 
 ---
 
@@ -57,7 +53,7 @@ For **x86** builds use `$vc\lib\x86`, `$sdk\Lib\$k\ucrt\x86`,
 ### 2.1 x64 (modern host: Illustrator 2021+ is 64-bit)
 
 ```bat
-cl /nologo /TC /LD /MT /O2 ^
+cl /nologo /TC /I ..\deps\esabi\include /LD /MT /O2 ^
    /D ESHTTP_BUILD /D WIN32_LEAN_AND_MEAN /D _CRT_SECURE_NO_WARNINGS ^
    eshttp.c ^
    /Fe:eshttp2-x64.dll
@@ -93,7 +89,7 @@ dumpbin /exports eshttp2-x64.dll
 Expected (native-abi v2): `ESInitialize`, `ESGetVersion`, `ESFreeMem`,
 `ESTerminate`, `eshttp_request`, `eshttp_last_error`, `eshttp_version`,
 `eshttp_available`. There is **no `eshttp_free`** — the host frees every
-kTypeString return via `ESFreeMem`.
+ESABI_TYPE_STRING return via `ESFreeMem`.
 
 `ESInitialize` signature string (v2, pinned): 
 `"eshttp_request_sssss,eshttp_last_error_f,eshttp_version_f,eshttp_available_f"`
@@ -110,7 +106,7 @@ plus the `eshttp_st_*` hooks against a local loopback WinSock server — no real
 network access.
 
 ```bat
-cl /nologo /TC /MT /O2 ^
+cl /nologo /TC /I ..\deps\esabi\include /MT /O2 ^
    /D ESHTTP_STATIC /D ESHTTP_SELFTEST ^
    /D WIN32_LEAN_AND_MEAN /D _CRT_SECURE_NO_WARNINGS ^
    selftest.c ^
@@ -130,7 +126,7 @@ eshttp-selftest.exe
 Debug build (for crash triage — `/Od /Zi` + PDB):
 
 ```bat
-cl /nologo /TC /MT /Od /Zi ^
+cl /nologo /TC /I ..\deps\esabi\include /MT /Od /Zi ^
    /D ESHTTP_STATIC /D ESHTTP_SELFTEST ^
    /D WIN32_LEAN_AND_MEAN /D _CRT_SECURE_NO_WARNINGS ^
    selftest.c /Fe:eshttp-selftest-dbg.exe
@@ -148,7 +144,7 @@ T18 bridge DLL rebuild from it).
 x64 (modern host):
 
 ```bat
-cl /nologo /TC /MT /O2 ^
+cl /nologo /TC /I ..\deps\esabi\include /MT /O2 ^
    /D WIN32_LEAN_AND_MEAN /D _CRT_SECURE_NO_WARNINGS ^
    eshttp-cli.c /Fe:eshttp-cli.exe
 ```
@@ -200,8 +196,7 @@ Worker start/stop contract (for consumers — the T19 driver + T21 benchmark):
 
 A PURE named-pipe client ExternalObject (T18): it never does networking —
 it connects to the `--worker` pipe and asks the worker to run HTTP
-out-of-process (the firewall-escape lane). ABI: canonical direct-interface
-(`long fn(TaggedData*, long, TaggedData*)`), exports exactly 5 =
+out-of-process (the firewall-escape lane). ABI: pinned ESABI v0.3.0 direct-interface, exports exactly 5 =
 `ESInitialize`/`ESGetVersion`/`ESFreeMem`/`ESTerminate` + the single business
 method `eshttp_pipe_request(op, payload, timeoutMs)` (op covers
 ping/status/version/echo/request/quit). Report format and protocol:
@@ -210,14 +205,14 @@ ping/status/version/echo/request/quit). Report format and protocol:
 **FREESTANDING** (skill discipline): no CRT, no `<windows.h>`; Win32 imports
 are hand-declared, memory comes from the process heap
 (`HeapAlloc`/`HeapFree`), `ESFreeMem` = `HeapFree` (exact allocator match),
-every wait carries a hard deadline, and NO negative (fatal) `kESErr*` code
-is ever returned — every failure path returns a bounded kTypeString report
+every wait carries a hard deadline, and NO negative (fatal) `ESABI_ERR_*` status
+is ever returned — every failure path returns a bounded `ESABI_TYPE_STRING` report
 with a machine-readable `errClass`.
 
 x64 (modern host):
 
 ```bat
-cl /nologo /TC /LD /MT /O2 /GS- /nodefaultlib ^
+cl /nologo /TC /I ..\deps\esabi\include /LD /MT /O2 /GS- /nodefaultlib ^
    /D WIN32_LEAN_AND_MEAN /Fe:eshttp-ipc-x64.dll eshttp-ipc.c ^
    /link /entry:DllMain /subsystem:windows /nodefaultlib kernel32.lib
 ```
@@ -256,7 +251,7 @@ Expected: only `KERNEL32.dll` (freestanding proof — no CRT).
 `ESInitialize` signature string (T18, pinned):
 `"eshttp_pipe_request_ssd"` — one method, 3 args (op string, payload string,
 timeout declared `_d`; per the skill's signature-cast observation the timeout
-arrives as `kTypeInteger`, so the bridge accepts the whole numeric family).
+arrives as `ESABI_TYPE_INTEGER`, so the bridge accepts the whole numeric family).
 
 Live ABI probe (requires a running worker — `eshttp-cli.exe --worker` or a
 marker-job spawn):
@@ -303,7 +298,7 @@ Distribution rules:
   // verify typeof accel.eshttp_version === "function" before first use;
   // no-arg methods take a dummy 0 (eshttp_version(0), eshttp_available(0),
   // eshttp_last_error(0)); there is NO eshttp_free — the host frees every
-  // kTypeString return via ESFreeMem.
+  // ESABI_TYPE_STRING return via ESFreeMem.
   ```
   and treat any envelope with `abi !== "http-v1"` as an incompatible DLL
   (mark dead → degrade to socket).
@@ -321,7 +316,7 @@ Distribution rules:
 | `ExternalObject("lib:eshttp")` throws | DLL not on the search path (§4) or bitness mismatch — fall back to socket; do not call `eshttp_request`. |
 | WinHTTP TLS failures on old Windows | WinHTTP TLS defaults follow the OS; on legacy targets consider registry/system TLS settings. `verifyTls:false` disables cert validation only. |
 | `error.code: unsupported` from `eshttp_available(0)` == 0 | WinHTTP session creation failed (rare on XP-era or locked-down systems) — wrapper must degrade to socket. |
-| RPC_E_SERVERFAULT (0x80010105) on any call | Host called a non-canonical export (v1 plain-C shape) — the DLL must expose the canonical direct-interface ABI (v2: ESInitialize + TaggedData shape). Rebuild from `eshttp.c` v2; verify with `dumpbin /exports` (8 exports) + `dll-smoke.exe`. |
+| RPC_E_SERVERFAULT (0x80010105) on any call | Host called an incompatible export. The DLL must expose the ESABI v0.3.0 direct-interface shape. Rebuild from `eshttp.c` v2; verify with `dumpbin /exports` (8 exports) + `dll-smoke.exe`. |
 
 ---
 
@@ -353,7 +348,7 @@ Not addressed (documented): `verifyTls:false` disables cert validation by design
 1. `eshttp-selftest.exe` → `ALL GREEN` (exit 0, 166 checks).
 2. `dumpbin /exports` → exactly the 8 v2 exports (4 ES* + 4 business; no `eshttp_free`).
 3. `dll-smoke.exe` → loads `eshttp2-x64.dll`, exercises all 8 exports through
-   the canonical TaggedData ABI, `DLL-SMOKE OK` (exit 0).
+   the pinned ESABI direct interface, `DLL-SMOKE OK` (exit 0).
 4. Probe `probe.exe` (optional dev tool) → `url_parse` accepts http/https
    (incl. userinfo, IPv6, non-default ports) and rejects ftp/malformed.
 5. Wire-level R-G5-E1 (covered by the selftest): `userAgent:null` → zero

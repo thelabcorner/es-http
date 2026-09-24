@@ -29,6 +29,29 @@ const TEST_DIR = path.join(__dirname, "..");
 const ROOT = path.join(TEST_DIR, "..");
 const REPORT = path.join(TEST_DIR, "REPORT.md");
 
+// The generated include-compat artifact intentionally embeds sibling bundles as
+// JavaScript string literals. Q12 is asserting that ESHTTP's OWN executable
+// code has no Node/CommonJS dependency, so payload text must not influence the
+// substring check. Keep this logic aligned with eshttp-build.mjs's own-code
+// scanner without evaluating the embedded strings.
+function blankGeneratedPayloadLiteral(text, varName) {
+    const marker = "var " + varName;
+    const at = text.indexOf(marker);
+    if (at < 0) return text;
+    let i = text.indexOf('"', at);
+    if (i < 0) return text;
+    const start = i;
+    i++;
+    for (; i < text.length; i++) {
+        const c = text.charAt(i);
+        if (c === "\\") { i++; continue; }
+        if (c === '"') break;
+    }
+    if (i >= text.length) return text;
+    const blank = text.substring(start, i + 1).replace(/[^\n]/g, " ");
+    return text.substring(0, start) + blank + text.substring(i + 1);
+}
+
 module.exports = function (suite, env) {
     const A = env.assert;
     const EQ = env.assertEq;
@@ -74,8 +97,14 @@ module.exports = function (suite, env) {
         const jsxinc = path.join(srcDir, "eshttp.jsxinc");
         if (fs.existsSync(jsxinc)) {
             const src = fs.readFileSync(jsxinc, "utf8");
-            A(src.indexOf("require(") < 0, "jsxinc must not require() anything (ES3 / no Node)");
-            A(src.indexOf("module.exports") < 0, "jsxinc must not use CommonJS exports");
+            const own = blankGeneratedPayloadLiteral(
+                blankGeneratedPayloadLiteral(src, "ESON_ACCEL_BUNDLE"),
+                "ESB64_ACCEL_BUNDLE"
+            );
+            A(!/(^|[^A-Za-z0-9_$])require\s*\(/.test(own),
+                "jsxinc own code must not call bare require() (ES3 / no Node)");
+            A(own.indexOf("module.exports") < 0,
+                "jsxinc own code must not use CommonJS exports");
         }
         for (const f of tsFiles) {
             const src = fs.readFileSync(path.join(srcDir, f), "utf8");

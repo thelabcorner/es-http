@@ -14,11 +14,11 @@ bare `__declspec(dllexport)` function library with **caller-owned** buffers
 Adobe ExternalObject direct-interface**: the 4 standard `ES*` exports
 (`ESInitialize`/`ESGetVersion`/`ESFreeMem`/`ESTerminate`) + business functions
 declared in the `ESInitialize` signature string, returning **host-owned
-`kTypeString`** buffers that ExtendScript frees via `ESFreeMem`.
+`ESABI_TYPE_STRING`** buffers that ExtendScript frees via `ESFreeMem`.
 **`eshttp_free` is REMOVED from the export set** — the v1 "caller must free with
 `eshttp_free()`" contract was a **double-free design flaw**: the ExternalObject
 proxy copies the returned C string to JS at call return, and the host frees the
-original `kTypeString` buffer through `ESFreeMem`; a separate `eshttp_free()` call
+original `ESABI_TYPE_STRING` buffer through `ESFreeMem`; a separate `eshttp_free()` call
 (which could not even see the original pointer through the string copy) double-
 freed or leaked. See §4.4 and §2.
 
@@ -41,12 +41,12 @@ declare it in `eshttp_version` output / meta). It is loaded from ExtendScript as
 var accel = new ExternalObject("lib:eshttp");
 ```
 
-The DLL implements the **canonical Adobe ExternalObject direct-interface**
-(`ESFunction` prototype — see §2/§2.1): business methods take `TaggedData`
-argument vectors and return `TaggedData` results. All business payloads are
-UTF-8 JSON strings. **No structs, no callbacks, no handles cross the boundary**
-beyond the `TaggedData` envelope itself. Binary payloads cross the boundary
-**base64-encoded** (NUL-safe — `kTypeString` is NUL-terminated and cannot carry
+The DLL implements the ExtendScript ExternalObject direct interface through
+**ESABI v0.3.0** (see §2/§2.1): business methods take `esabi_value` argument
+vectors and return `esabi_value` results. All business payloads are UTF-8 JSON
+strings. **No structs, callbacks, or handles cross the boundary** beyond the
+ESABI value envelope itself. Binary payloads cross the boundary
+**base64-encoded** (NUL-safe — `ESABI_TYPE_STRING` is NUL-terminated and cannot carry
 embedded NULs).
 
 The direct interface is chosen because the API is small, flat, and synchronous,
@@ -62,51 +62,23 @@ the interop model": prefer direct access for exactly this shape).
 undecorated, `__cdecl` (ExtendScript default).
 
 ```c
-/* eshttp.h — extern "C", __declspec(dllexport), __cdecl */
+#include <esabi/esabi.h>
 
-/* ---- canonical ExternalObject direct-interface exports ---- */
+/* eshttp.h keeps ESHTTP's import/export policy; ESABI owns value layout,
+   status/tag constants, packing, and ESABI_CALL. */
+ESHTTP_API char* ESHTTP_CALL ESInitialize(esabi_value *argv, esabi_long argc);
+ESHTTP_API esabi_long ESHTTP_CALL ESGetVersion(void);
+ESHTTP_API void ESHTTP_CALL ESFreeMem(void *p);
+ESHTTP_API void ESHTTP_CALL ESTerminate(void);
 
-/* Return the ESInitialize signature metadata string: a single comma-separated
-   list of "name_<argcodes>" entries. The host parses this to bind the business
-   methods. The returned string is malloc'd — the host frees it via ESFreeMem. */
-__declspec(dllexport) const char* ESInitialize(TaggedData *argv, long argc);
-
-/* Return a long version number, exposed as ExternalObject.version (= 1 in v2;
-   v1 had no ESGetVersion, so the version property read 0). */
-__declspec(dllexport) long ESGetVersion(void);
-
-/* Release memory the host owns (kTypeString buffers returned by business
-   methods, and the ESInitialize signature string). MUST match the DLL's
-   allocator: in v2, plain free(). Never free a host pointer or a static
-   buffer. */
-__declspec(dllexport) void ESFreeMem(void *p);
-
-/* Release persistent native state during unload (session cache cleanup).
-   No-op-safe when nothing was initialized. */
-__declspec(dllexport) void ESTerminate(void);
-
-/* ---- business functions (declared via the ESInitialize signature string) ---- */
-
-/* Perform one HTTP request. BLOCKING. Returns a malloc'd UTF-8 JSON envelope
-   string (response envelope, §4) as a kTypeString, or kTypeUndefined on
-   catastrophic failure (OOM). Host frees the string via ESFreeMem.
-   Caller (JSX) passes the 5 string args in order; see §8 for the call shape. */
-__declspec(dllexport) long eshttp_request(TaggedData *argv, long argc, TaggedData *retval);
-
-/* Last error message (UTF-8), malloc'd copy. "" if none. Host frees via
-   ESFreeMem. Takes a DUMMY argument (see signature string below); JSX calls
-   eshttp_last_error(0). */
-__declspec(dllexport) long eshttp_last_error(TaggedData *argv, long argc, TaggedData *retval);
-
-/* Static version string "major.minor.patch" ("1.0.0"), malloc'd copy. Host
-   frees via ESFreeMem. Takes a DUMMY argument; JSX calls eshttp_version(0).
-   Also a liveness probe: if ExternalObject loads, this always succeeds. */
-__declspec(dllexport) long eshttp_version(TaggedData *argv, long argc, TaggedData *retval);
-
-/* 1 if the backend (WinHTTP session) initialized successfully, 0 otherwise.
-   Lets the wrapper probe health without a network call. kTypeInteger result.
-   Takes a DUMMY argument; JSX calls eshttp_available(0). */
-__declspec(dllexport) long eshttp_available(TaggedData *argv, long argc, TaggedData *retval);
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_request(
+    esabi_value *argv, esabi_long argc, esabi_value *retval);
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_last_error(
+    esabi_value *argv, esabi_long argc, esabi_value *retval);
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_version(
+    esabi_value *argv, esabi_long argc, esabi_value *retval);
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_available(
+    esabi_value *argv, esabi_long argc, esabi_value *retval);
 ```
 
 ### 2.0 ESInitialize signature string (FINAL, binding)
@@ -125,41 +97,29 @@ __declspec(dllexport) long eshttp_available(TaggedData *argv, long argc, TaggedD
   `accel.eshttp_last_error(0)`.
 - The signature string itself is malloc'd and host-freed via ESFreeMem.
 
-### 2.1 Calling convention & TaggedData shape
+### 2.1 Calling convention & ESABI value shape
 
-- Every business export is `long fn(TaggedData *argv, long argc, TaggedData
-  *retval)` — the canonical `ESFunction` prototype (SoSharedLibDefs.h; verified
-  live on Illustrator 30.6.0: effective call order `(argv, argc, result)`).
-- `TaggedData` (8-byte pack):
+**ESABI v0.3.0 is the sole ABI definition used by production code and native tests.** On Windows it selects the runtime-verified LONG32 profile: `esabi_value` is 16 bytes, aligned to 8 bytes, with the type tag at offset 8 and reserved field at offset 12. `ESABI_CALL` pins the ExternalObject cdecl convention.
 
-```c
-typedef struct TaggedData TaggedData;
-struct TaggedData {
-    union { long intval; double fltval; char *string; void *hObject; } data;
-    long type;   /* kType* tag, see table */
-    long filler;
-};
-```
-
-- Tag values used by this contract (canonical + live-verified):
+Do not redeclare this structure in ESHTTP. Include `<esabi/esabi.h>` and use the ESABI names directly.
 
 | Tag | Value | Use here |
-|---|---|---|
-| `kTypeUndefined` | 0 | catastrophic-failure result (retval preset); also result before write |
-| `kTypeBool` | 2 | (not used) |
-| `kTypeDouble` | 3 | (not used) |
-| `kTypeString` | 4 | request args (`_s`); envelope/version/last_error results; ESInitialize signature string |
-| `kTypeInteger` | 123 | `eshttp_available()` result (1/0) |
-| `kTypeUInteger` | 124 | (not used) |
-| `kTypeScript` | 125 | (not used — never return evaluated scripts) |
+|---|---:|---|
+| `ESABI_TYPE_UNDEFINED` | 0 | result before write / catastrophic failure |
+| `ESABI_TYPE_BOOL` | 2 | not used |
+| `ESABI_TYPE_DOUBLE` | 3 | dummy/numeric arguments |
+| `ESABI_TYPE_STRING` | 4 | request args; envelope/version/last_error results |
+| `ESABI_TYPE_INTEGER` | 123 | `eshttp_available()` result |
+| `ESABI_TYPE_UINTEGER` | 124 | accepted by numeric IPC paths |
+| `ESABI_TYPE_SCRIPT` | 125 | not used |
 
-- **Return protocol:** business exports return `kESErrOK` (0) on success and
+- **Return protocol:** business exports return `ESABI_OK` (0) on success and
   write the result into `*retval` (`retval->type` + `retval->data`). Bad
-  argument list → return `kESErrBadArgumentList` (20, **catchable**).
-  **Never return negative error codes** (`kESErrNoMemory`=-28,
-  `kESErrException`=-29, `kESErrInternal`=-33 are fatal/uncatchable — a negative
+  argument list → return `ESABI_ERR_BAD_ARGUMENTS` (20, **catchable**).
+  **Never return negative error codes** (`ESABI_ERR_OUT_OF_MEMORY`=-28,
+  `ESABI_ERR_UNCAUGHT_EXCEPTION`=-29 and `ESABI_ERR_INTERNAL`=-33 are fatal/uncatchable — a negative
   return from a method is a host-bypass crash). Argument reads validate
-  `argv[i].type == kTypeString` per `_s` before casting (ESON string_arg
+  `argv[i].type == ESABI_TYPE_STRING` per `_s` before casting (ESON string_arg
   pattern); on mismatch, treat as bad-args.
 - Zero the result slot before writing it.
 - `__cdecl` (the ExtendScript default). Do **not** use `__stdcall` unless a host
@@ -389,7 +349,7 @@ This keeps the envelope simple: **`error != null` ⟺ no HTTP response**.
 
 **The v1 "caller MUST free with `eshttp_free()`" contract is GONE — it was a
 double-free design flaw.** Under the canonical ExternalObject direct-interface,
-every `kTypeString` the DLL returns is **host-owned**: ExtendScript's proxy
+every `ESABI_TYPE_STRING` the DLL returns is **host-owned**: ExtendScript's proxy
 copies the C string to JS at call return AND the host frees the original
 buffer through `ESFreeMem`. A separate `eshttp_free()` call would double-free
 (or, through the JS string copy, free a pointer that was never the original).
@@ -397,7 +357,7 @@ There is no `eshttp_free` export in v2.
 
 Rules (binding):
 
-- **Every `kTypeString` result is a fresh `malloc`'d buffer**: the
+- **Every `ESABI_TYPE_STRING` result is a fresh `malloc`'d buffer**: the
   `eshttp_request` envelope, `eshttp_version()`'s copy of the version string,
   `eshttp_last_error()`'s copy of the error message, and the `ESInitialize`
   signature string. **Never return a static buffer** (v1 returned static
@@ -409,7 +369,7 @@ Rules (binding):
   the host handles it. (`accel.eshttp_free(...)` must not appear anywhere in
   the wrapper or the harness stub; the QA regression gate asserts it is never
   called post-request.)
-- **Catastrophic failure:** `eshttp_request` returns `kTypeUndefined` (tag 0)
+- **Catastrophic failure:** `eshttp_request` returns `ESABI_TYPE_UNDEFINED` (tag 0)
   in `*retval` only on out-of-memory for the envelope or uninitialized
   backend. In that case the wrapper calls `eshttp_last_error(0)` for a
   message and builds an `"internal"` error (never-throws contract).
@@ -598,10 +558,10 @@ binding, breaking change from v1):**
    the 4 `ES*` exports + business methods (this is the live-verified same-machine
    reference pattern from ESON's `eson_json.c` on Illustrator 30.6.0). The v1
    bare `__declspec(dllexport)` function-library shape is abandoned.
-2. **Host-owned kTypeString / no eshttp_free** — RULED: all returned strings
+2. **Host-owned ESABI_TYPE_STRING / no eshttp_free** — RULED: all returned strings
    are `malloc`'d and host-freed via `ESFreeMem` (= `free`). `eshttp_free` is
    REMOVED; v1's caller-frees contract was a double-free design flaw (the host
-   frees the original `kTypeString` through ESFreeMem; a wrapper call could not
+   frees the original `ESABI_TYPE_STRING` through ESFreeMem; a wrapper call could not
    even address the original pointer through the JS string copy). No
    slot_register/slot_release machinery in v2.
 3. **`_f` dummy-arg convention** — RULED: no-arg methods are declared with a
@@ -611,9 +571,9 @@ binding, breaking change from v1):**
 4. **Lazy WinHTTP init preserved** — RULED: ESInitialize does NOT touch
    WinHTTP; the session cache stays lazy (first request / `eshttp_available`
    probe). `ESTerminate` releases the session cache. `ESGetVersion` = 1.
-5. **Return codes** — RULED: business exports return `kESErrOK` (0) on
-   success, `kESErrBadArgumentList` (20, catchable) on bad args, **never
-   negative** (negative `kESErr*` are fatal/uncatchable host-bypass crashes).
+5. **Return codes** — RULED: business exports return `ESABI_OK` (0) on
+   success, `ESABI_ERR_BAD_ARGUMENTS` (20, catchable) on bad args, **never
+   negative** (negative `ESABI_ERR_*` statuses are fatal/uncatchable host-bypass crashes).
 6. **Filename/load** — RULED: dev iteration builds `eshttp2.dll` (x86+x64)
    because the loaded `eshttp.dll` is file-locked by the host; final release
    stages `eshttp2.dll` → `eshttp.dll` after a user-approved restart. The

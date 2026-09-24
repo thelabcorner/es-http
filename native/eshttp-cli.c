@@ -190,8 +190,8 @@ static char* claim_job(int which) {
  * Skill-driven design (externalobject-extendscript SKILL.md): the worker is
  * a plain EXE - no ExternalObject, so no signature-cast / per-method-binding
  * concerns here (those are the bridge DLL's, T18); never-negative error
- * codes (the engine returns kESErrOK/kESErrBadArgumentList only); ESFreeMem
- * ownership exactness (every kTypeString envelope freed exactly once);
+ * codes (the engine returns ESABI_OK/ESABI_ERR_BAD_ARGUMENTS only); ESFreeMem
+ * ownership exactness (every ESABI_TYPE_STRING envelope freed exactly once);
  * bounded payloads (ESHTTP_IPC_PAYLOAD_MAX; large response envelopes travel
  * by file path - skill L193-195 multi-MB strings unsafe).
  */
@@ -350,8 +350,8 @@ static char* run_request_from_job(const char* text, size_t len) {
     const char* url = NULL;
     const char* headers = "{}";
     const char* opts = "{\"proxy\":\"direct\",\"timeoutMs\":15000}";
-    TaggedData args[5];
-    TaggedData retval;
+    esabi_value args[5];
+    esabi_value retval;
     const char* strs[5];
     long i;
 
@@ -372,14 +372,14 @@ static char* run_request_from_job(const char* text, size_t len) {
     strs[4] = opts;
     memset(args, 0, sizeof(args));
     for (i = 0; i < 5; i++) {
-        args[i].type = kTypeString;
-        args[i].data.string = (char*)strs[i];
-        args[i].filler = 0;
+        args[i].type = ESABI_TYPE_STRING;
+        args[i].payload.string_value = (char*)strs[i];
+        args[i].reserved = 0;
     }
     memset(&retval, 0, sizeof(retval));
-    if (eshttp_request(args, 5, &retval) != kESErrOK) return NULL;
-    if (retval.type != kTypeString || !retval.data.string) return NULL;
-    return retval.data.string;   /* caller frees via ESFreeMem (exact once) */
+    if (eshttp_request(args, 5, &retval) != ESABI_OK) return NULL;
+    if (retval.type != ESABI_TYPE_STRING || !retval.payload.string_value) return NULL;
+    return retval.payload.string_value;   /* caller frees via ESFreeMem (exact once) */
 }
 
 static void result_file_path(const char* requestId, char* out, size_t outsz) {
@@ -911,8 +911,8 @@ int main(int argc, char** argv) {
     const char* opts = "{\"proxy\":\"direct\",\"timeoutMs\":15000}";
     const char* mode = NULL;
     int headerSeen = 0;
-    TaggedData args[5];
-    TaggedData retval;
+    esabi_value args[5];
+    esabi_value retval;
     const char* strs[5];
     int rc = 1;
 
@@ -1000,21 +1000,21 @@ int main(int argc, char** argv) {
 
     memset(args, 0, sizeof(args));
     for (i = 0; i < 5; i++) {
-        args[i].type = kTypeString;
-        args[i].data.string = (char*)strs[i];
-        args[i].filler = 0;
+        args[i].type = ESABI_TYPE_STRING;
+        args[i].payload.string_value = (char*)strs[i];
+        args[i].reserved = 0;
     }
     memset(&retval, 0, sizeof(retval));
 
-    if (eshttp_request(args, 5, &retval) != kESErrOK) {
+    if (eshttp_request(args, 5, &retval) != ESABI_OK) {
         write_file_atomic(done, "{\"ok\":false,\"error\":\"eshttp_request returned non-OK\"}");
         rc = 1;
-    } else if (retval.type != kTypeString || !retval.data.string) {
+    } else if (retval.type != ESABI_TYPE_STRING || !retval.payload.string_value) {
         write_file_atomic(done, "{\"ok\":false,\"error\":\"eshttp_request returned no envelope\"}");
         rc = 1;
     } else {
-        rc = write_file_atomic(done, retval.data.string) ? 0 : 1;
-        ESFreeMem(retval.data.string);
+        rc = write_file_atomic(done, retval.payload.string_value) ? 0 : 1;
+        ESFreeMem(retval.payload.string_value);
     }
 
     /* Claimed: remove the job file so the caller knows it was consumed. */

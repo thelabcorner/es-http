@@ -6,7 +6,7 @@
  * pipe lane is headlessly testable:
  *
  *   - The fake is an ExternalObject-shaped bridge: `eshttp_pipe_request(op,
- *     payload, timeoutMs)` returns a kTypeString report with the EXACT
+ *     payload, timeoutMs)` returns a ESABI_TYPE_STRING report with the EXACT
  *     key=value fields the driver parses (protocol/success/op/requestId/
  *     errClass/message/winerr/protoMajor/protoMinor/workerAbi/buildId/pid/
  *     uptimeMs/requests/[payload]).

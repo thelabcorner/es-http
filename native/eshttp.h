@@ -7,15 +7,14 @@
  *
  * Backend: WinHTTP (declared in envelope meta as "backend":"winhttp").
  *
- * ABI: canonical ExtendScript ExternalObject DIRECT-INTERFACE shape
- *   `long fn(TaggedData* argv, long argc, TaggedData* retval)`
- * (SoSharedLibDefs.h ESFunction typedef), live-verified on Illustrator
- * 30.6.0 via the sibling ESON prototype (eson/native/eson_json.c). The
+ * ABI: ExtendScript ExternalObject direct interface through pinned ESABI
+ * v0.3.0. Its Windows LONG32 profile is live-verified on Illustrator 30.6.0;
+ * ESABI owns value layout, tags, status codes, packing, and cdecl.
  * host calls every export with (argv, argc, retval); the ESInitialize
  * signature string drives the host's argument casting.
  *
  * Exports (exactly 8): 4 mandatory ES* lifecycle + 4 business methods.
- *   ESInitialize(TaggedData*, long) -> signature metadata string (malloc'd,
+ *   ESInitialize(esabi_value*, long) -> signature metadata string (malloc'd,
  *     freed via ESFreeMem like any returned string — ESON verified pattern)
  *   ESGetVersion() -> long (= 1, exposed as ExternalObject.version)
  *   ESFreeMem(void*) -> void (free; matches the malloc/calloc of every
@@ -24,57 +23,26 @@
  *   eshttp_request / eshttp_version / eshttp_last_error / eshttp_available
  *
  * Memory rules (native-abi v2 §4.4):
- *   - The HOST frees every kTypeString return via ESFreeMem (= free). The
+ *   - The HOST frees every ESABI_TYPE_STRING return via ESFreeMem (= free). The
  *     DLL NEVER returns a static buffer: version/last_error/request all
  *     return malloc'd copies. There is NO caller-side free function
  *     (eshttp_free was removed in v2 — calling it was the double-free flaw).
- *   - kTypeString (4) returns are UTF-8, null-terminated, malloc'd.
+ *   - ESABI_TYPE_STRING (4) returns are UTF-8, null-terminated, malloc'd.
  *   - Methods never return negative error codes (fatal/uncatchable);
- *     kESErrOK (0) on success, kESErrBadArgumentList (20) on bad args.
+ *     ESABI_OK (0) on success, ESABI_ERR_BAD_ARGUMENTS (20) on bad args.
  */
 #ifndef ESHTTP_H
 #define ESHTTP_H
+
+#include <esabi/esabi.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ---- canonical ExternalObject direct-interface ABI (SoSharedLibDefs.h) ----
- * Values live-verified on Illustrator 30.6.0 (sibling ESON prototype):
- * kTypeString=4 (UTF-8, malloc'd, freed via ESFreeMem), kTypeInteger=123,
- * kTypeDouble=3, kTypeUndefined=0. Negative kESErr* are FATAL and cannot be
- * caught by JavaScript — never return them from a method. */
-typedef struct TaggedData TaggedData;
-struct TaggedData {
-    union {
-        long intval;      /* kTypeInteger/kTypeUInteger/kTypeBool */
-        double fltval;    /* kTypeDouble */
-        char* string;     /* kTypeString (UTF-8, malloc'd) */
-        void* hObject;    /* kTypeLiveObject* (indirect only) */
-    } data;
-    long type;            /* kType* tag */
-    long filler;          /* 8-byte pack alignment */
-};
-
-enum {
-    kTypeUndefined = 0,
-    kTypeBool = 2,
-    kTypeDouble = 3,
-    kTypeString = 4,
-    kTypeLiveObject = 6,
-    kTypeLiveObjectRelease = 7,
-    kTypeInteger = 123,
-    kTypeUInteger = 124,
-    kTypeScript = 125
-};
-
-enum {
-    kESErrOK = 0,
-    kESErrBadArgumentList = 20,
-    kESErrNoMemory = -28,
-    kESErrException = -29,
-    kESErrInternal = -33
-};
+/* ESABI v0.3.0 is the sole ExternalObject ABI authority. ESHTTP owns only
+ * its HTTP API and memory/state behavior; value layout, tags, status codes,
+ * packing, and calling convention come from ESABI. */
 
 /* ---- export/import decorators ---- */
 #if defined(ESHTTP_BUILD)
@@ -85,7 +53,7 @@ enum {
 #  define ESHTTP_API __declspec(dllimport)   /* consuming the DLL */
 #endif
 
-#define ESHTTP_CALL __cdecl
+#define ESHTTP_CALL ESABI_CALL
 
 /* ---- version ---- */
 #define ESHTTP_VERSION_MAJOR 1
@@ -105,10 +73,10 @@ enum {
  * Signature string (FINAL): "eshttp_request_sssss,eshttp_last_error_f,
  * eshttp_version_f,eshttp_available_f".
  * Returns a MALLOC'd string (freed via ESFreeMem, ESON verified pattern). */
-ESHTTP_API char* ESHTTP_CALL ESInitialize(TaggedData* argv, long argc);
+ESHTTP_API char* ESHTTP_CALL ESInitialize(esabi_value* argv, esabi_long argc);
 
 /* Version exposed as the read-only ExternalObject.version property (= 1). */
-ESHTTP_API long ESHTTP_CALL ESGetVersion(void);
+ESHTTP_API esabi_long ESHTTP_CALL ESGetVersion(void);
 
 /* Release a buffer the DLL returned. MUST match the DLL's allocator (free). */
 ESHTTP_API void ESHTTP_CALL ESFreeMem(void* p);
@@ -124,11 +92,11 @@ ESHTTP_API void ESHTTP_CALL ESTerminate(void);
  *   argv[2] headersJson JSON object {name: string|array-of-strings} or ""
  *   argv[3] body        UTF-8 byte string, or ""
  *   argv[4] optsJson    JSON object (see below) or ""
- * All 5 are kTypeString per the `_sssss` signature cast.
+ * All 5 are ESABI_TYPE_STRING per the `_sssss` signature cast.
  *
- * retval: kTypeString (4) = freshly malloc'd UTF-8 JSON envelope (see
- * eshttp_envelope_* below), host-freed via ESFreeMem. Returns kESErrOK.
- * On NULL-arg/type mismatch returns kESErrBadArgumentList (catchable).
+ * retval: ESABI_TYPE_STRING (4) = freshly malloc'd UTF-8 JSON envelope (see
+ * eshttp_envelope_* below), host-freed via ESFreeMem. Returns ESABI_OK.
+ * On NULL-arg/type mismatch returns ESABI_ERR_BAD_ARGUMENTS (catchable).
  *
  * optsJson keys (unknown keys ignored; wrong types -> "invalid-args"):
  *   timeoutMs      number  default 30000   (0 = no timeout, discouraged)
@@ -147,26 +115,26 @@ ESHTTP_API void ESHTTP_CALL ESTerminate(void);
  *   maxBodyBytes   number  default 52428800 (50 MiB cap on response body)
  *   bodyIsBase64   bool    default false
  */
-ESHTTP_API long ESHTTP_CALL eshttp_request(
-    TaggedData* argv, long argc, TaggedData* retval);
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_request(
+    esabi_value* argv, esabi_long argc, esabi_value* retval);
 
-/* Last error message (UTF-8, human, no credentials). retval: kTypeString =
+/* Last error message (UTF-8, human, no credentials). retval: ESABI_TYPE_STRING =
  * malloc'd copy of the last error (host-freed via ESFreeMem). "" when there
  * is no error. Call with a dummy 0 (`eshttp_last_error_f` signature). */
-ESHTTP_API long ESHTTP_CALL eshttp_last_error(
-    TaggedData* argv, long argc, TaggedData* retval);
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_last_error(
+    esabi_value* argv, esabi_long argc, esabi_value* retval);
 
 /* Static version string "major.minor.patch" e.g. "1.0.0". retval:
- * kTypeString = malloc'd copy (host-freed via ESFreeMem). Always callable
+ * ESABI_TYPE_STRING = malloc'd copy (host-freed via ESFreeMem). Always callable
  * (liveness probe). Call with a dummy 0 (`eshttp_version_f` signature). */
-ESHTTP_API long ESHTTP_CALL eshttp_version(
-    TaggedData* argv, long argc, TaggedData* retval);
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_version(
+    esabi_value* argv, esabi_long argc, esabi_value* retval);
 
 /* 1 if the WinHTTP backend initialized successfully, else 0. retval:
- * kTypeInteger (123). Lets the wrapper health-check without a network call.
+ * ESABI_TYPE_INTEGER (123). Lets the wrapper health-check without a network call.
  * Call with a dummy 0 (`eshttp_available_f` signature). */
-ESHTTP_API long ESHTTP_CALL eshttp_available(
-    TaggedData* argv, long argc, TaggedData* retval);
+ESHTTP_API esabi_error ESHTTP_CALL eshttp_available(
+    esabi_value* argv, esabi_long argc, esabi_value* retval);
 
 /* ---- response envelope schema (the return value of eshttp_request) ----
  *

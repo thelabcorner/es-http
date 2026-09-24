@@ -7,13 +7,17 @@
  *   1. The IIFE defines the global `eshttp` with the http-api-v1 public
  *      surface (request/get/post/put/del/json/configure/forceTransport/
  *      resetTransport/transportInfo/transport/DEFAULTS/error/version).
- *   2. The unwrap footer republished the facade (no `.default` leak).
+ *   2. The ESTC footer bound the facade from the session-global publish
+ *      (no `.default` leak).
  *   3. Forbidden tokens in dist/eshttp.jsx == 0: `=>`, `let ` decls,
  *      `const ` decls, `class ` decls, backticks.
- *   4. The ES3 shim (Object.defineProperty / Function.prototype.bind
- *      fallbacks) is present at the top — and the bundle still loads in a
- *      sandbox with Object.defineProperty REMOVED (no-defineProperty
- *      sandbox test): the shim must cover the publish path.
+ *   4. The artifact NEVER mutates persistent built-ins (no Object /
+ *      Function.prototype patch shim — the ESTC migration contract); the
+ *      facade path is descriptor-free (guarded instance __defineGetter__
+ *      with a plain snapshot fallback, plain-assignment publish), and any
+ *      remaining descriptor READ sits behind the verified typeof guard.
+ *      The strict-engine sandbox (no Object.defineProperty, no
+ *      __defineGetter__) must still publish the facade.
  *
  * This suite reads the dist artifact directly (not env.eshttp) so it is
  * valid in every harness lane (esm/iife/jsxinc) and always audits the
@@ -88,12 +92,17 @@ module.exports = function (suite, env) {
         A(r !== null && typeof r === "object", "request returned a Result");
     });
 
-    testOrSkip("Q12 unwrap footer: dist/eshttp.jsx republishes the facade (no .default leak)", function () {
+    testOrSkip("Q12 unwrap footer: dist/eshttp.jsx binds the facade from the session-global publish", function () {
         const text = readDistJsx();
-        // The footer is esbuild's export-assignment + the unwrap that the
-        // build appends; look for the guarded republish marker.
-        A(/eshttp\s*&&\s*eshttp\.default/.test(text),
-            "unwrap footer references eshttp.default (guarded republish)");
+        // The ESTC footer binds `var eshttp` from the library's own
+        // plain-assignment session-global publish (no esbuild .default
+        // unwrap, no descriptor API on the facade path).
+        A(text.indexOf("var eshttp") >= 0, "footer declares var eshttp");
+        A(/\.eshttp\s*&&\s*typeof\s+\.eshttp\.request/.test(text) ||
+          /g\.eshttp\s*&&\s*typeof\s+g\.eshttp\.request/.test(text),
+            "footer reads the published session-global facade (guarded request check)");
+        A(text.indexOf("eshttp.default") < 0 && text.indexOf('eshttp["default"]') < 0,
+            "no eshttp.default wrapper access in the artifact");
     });
 
     testOrSkip("Q12 dist/eshttp.jsx forbidden tokens == 0 (=>, let/const/class decls, backticks)", function () {
@@ -117,17 +126,45 @@ module.exports = function (suite, env) {
         EQ(hits.length, 0, "forbidden tokens found: " + JSON.stringify(hits));
     });
 
-    testOrSkip("Q12 ES3 shim present in dist/eshttp.jsx (before the facade body)", function () {
+    testOrSkip("Q12 dist/eshttp.jsx never mutates persistent built-ins (no global shim)", function () {
         const text = readDistJsx();
-        // The embedded ESPAK accel bundle string constants (ESON/ESB64)
-        // legitimately precede the shim — generated payloads, not code — so
-        // the shim is asserted present-and-early rather than strictly first.
-        A(text.indexOf('if (typeof Object.defineProperty !== "function")') >= 0,
-            "Object.defineProperty shim present");
-        A(text.indexOf('if (typeof Function.prototype.bind !== "function")') >= 0,
-            "Function.prototype.bind shim present");
-        A(text.indexOf('if (typeof Object.defineProperty !== "function")') < text.indexOf("var eshttp"),
-            "shim precedes the IIFE facade declaration");
+        // ESTC migration contract: the artifact must not patch Object,
+        // Function.prototype, or any other persistent built-in. The old
+        // build prepended an Object.defineProperty/Function.prototype.bind
+        // shim; that shim is gone and must not come back.
+        const patchChecks = [
+            ["Object.defineProperty assignment", /Object\s*\.\s*defineProperty\s*=[^=]/, "Object.defineProperty ="],
+            ["Object[\"defineProperty\"] assignment", /Object\s*\[\s*["']defineProperty["']\s*\]\s*=[^=]/, "Object['defineProperty'] ="],
+            ["Object.getOwnPropertyDescriptor assignment", /Object\s*\.\s*getOwnPropertyDescriptor\s*=[^=]/, "Object.getOwnPropertyDescriptor ="],
+            ["Object.getOwnPropertyNames assignment", /Object\s*\.\s*getOwnPropertyNames\s*=[^=]/, "Object.getOwnPropertyNames ="],
+            ["Function.prototype.bind assignment", /Function\s*\.\s*prototype\s*\.\s*bind\s*=[^=]/, "Function.prototype.bind ="]
+        ];
+        const hits = [];
+        for (const c of patchChecks) {
+            if (c[1].test(text)) { hits.push(c[2]); }
+        }
+        EQ(hits.length, 0, "persistent built-in mutations found: " + JSON.stringify(hits));
+
+        // Any remaining descriptor READ must sit behind the ESTC-verified
+        // typeof feature guard (vendor-json's __proto__ own-data-property
+        // path). No unguarded descriptor use is allowed.
+        const descriptorReads = text.match(/Object\s*\[?\s*["']?defineProperty["']?\s*\]?/g) || [];
+        if (descriptorReads.length > 0) {
+            A(/typeof\s+Object\s*\[\s*["']defineProperty["']\s*\]\s*===?\s*["']function["']/.test(text) ||
+              /typeof\s+Object\s*\.\s*defineProperty\s*===?\s*["']function["']/.test(text),
+                "descriptor read present but not behind the verified typeof feature guard");
+        }
+    });
+
+    testOrSkip("Q12 dist/eshttp.jsx facade path is descriptor-free (guarded __defineGetter__ / snapshot)", function () {
+        const text = readDistJsx();
+        // transport/DEFAULTS use the guarded legacy instance __defineGetter__
+        // with the plain snapshot fallback; the publish is plain assignment.
+        A(text.indexOf("__defineGetter__") >= 0,
+            "guarded __defineGetter__ live-getter path present");
+        A(text.indexOf('if(typeof eshttp.__defineGetter__==="function")') >= 0 ||
+          /if\s*\(\s*typeof\s+eshttp\.__defineGetter__\s*===\s*["']function["']\s*\)/.test(text),
+            "__defineGetter__ path is feature-guarded");
     });
 
     testOrSkip("Q12 no-defineProperty sandbox: bundle loads and publishes with Object.defineProperty removed", function () {

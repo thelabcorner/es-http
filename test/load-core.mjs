@@ -299,7 +299,7 @@ function makeDollar(osName) {
 //
 // native-abi-v2 surface (T6/T7): the fake DLL mirrors the REAL eshttp.dll v2
 // boundary — 4 business methods ONLY (eshttp_request + the three no-arg
-// methods), eshttp_free REMOVED (the host frees kTypeString via ESFreeMem;
+// methods), eshttp_free REMOVED (the host frees ESABI_TYPE_STRING via ESFreeMem;
 // v1 caller-frees was the double-free flaw). The no-arg methods accept the
 // _f dummy-arg convention (the wrapper passes 0) and are tolerant of any
 // extra args. `state.freeCalls` records any (nonexistent) free invocations so

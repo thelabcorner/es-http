@@ -4,11 +4,14 @@
 // This module assembles the full `eshttp` facade OBJECT exactly like the
 // jsxinc: plain props for functions (request/get/post/put/del/json/
 // configure/forceTransport/resetTransport/transportInfo/helpers/error/
-// version), Object.defineProperty GETTERS for `transport` (live) and
-// `DEFAULTS` (fresh snapshot per access), and a plain mutable `__noNetwork`
-// prop (test hook). The build contract requires ONE default export — the
-// facade object — and eshttp-build.mjs appends the idempotent unwrap footer
-// that republishes it as the global `eshttp`.
+// version), guarded live getters for `transport` (current) and `DEFAULTS`
+// (fresh snapshot per access) when the engine provides the legacy instance
+// __defineGetter__ (plain snapshot fallback otherwise), and a plain mutable
+// `__noNetwork` prop (test hook). No descriptor API and no host-global patch
+// is used. The Node/ESM lane exports ONE default export — the facade object —
+// consumed by dist/eshttp-core.esm.mjs. The JSX artifact uses the side-effect
+// entry (src/jsx-entry.ts) and the ESTC footer binds the global `eshttp`
+// from this module's own session-global publish.
 //
 // NEVER-throws contract (api-spec §2/§3): _request catches every validation
 // throw and every transport failure into an error Result. Only catastrophic
@@ -416,29 +419,31 @@ function platformName(): string {
 
 // eshttp.transport — always-current active transport name.
 // (Refreshed on every request/resolve; also readable directly.)
-try {
-  Object.defineProperty(eshttp, "transport", {
-    get: function () { return _currentTransport; },
-    enumerable: true
-  });
-} catch (e) {
+//
+// ESTC compatibility: no descriptor API is used anywhere on the facade path.
+// On engines with the legacy instance __defineGetter__ (Node/V8, older
+// SpiderMonkey) the documented live getter is installed; otherwise
+// (Illustrator 30.6 reports no __defineGetter__) the documented fallback is a
+// plain snapshot property — the same observable value the pre-ESTC eager
+// descriptor path produced on that engine. Neither path mutates Object,
+// Function.prototype, or any shared built-in.
+if (typeof eshttp.__defineGetter__ === "function") {
+  eshttp.__defineGetter__("transport", function () { return _currentTransport; });
+} else {
   eshttp.transport = _currentTransport;
 }
 
 // DEFAULTS — replacement-safe snapshot (fresh copy each access).
-try {
-  Object.defineProperty(eshttp, "DEFAULTS", {
-    get: function () {
-      var snap: any = {};
-      var k: string;
-      for (k in _defaults) {
-        if (has(_defaults, k)) { snap[k] = _defaults[k]; }
-      }
-      return snap;
-    },
-    enumerable: true
+if (typeof eshttp.__defineGetter__ === "function") {
+  eshttp.__defineGetter__("DEFAULTS", function () {
+    var snap: any = {};
+    var k: string;
+    for (k in _defaults) {
+      if (has(_defaults, k)) { snap[k] = _defaults[k]; }
+    }
+    return snap;
   });
-} catch (e) {
+} else {
   var _snapFallback: any = {};
   var _k: string;
   for (_k in _defaults) { if (has(_defaults, _k)) { _snapFallback[_k] = _defaults[_k]; } }
@@ -588,17 +593,11 @@ function circularRef(): any {
 /* ------------------------------------------------------------------ *
  * Publish
  * ------------------------------------------------------------------ */
-try {
-  Object.defineProperty(sessionGlobal(), "eshttp", {
-    value: eshttp,
-    writable: true,
-    configurable: true,
-    enumerable: true
-  });
-} catch (e) {
-  var g = sessionGlobal();
-  if (g) { g.eshttp = eshttp; }
-}
+// Plain-assignment publish of the fully-built facade onto the session global.
+// No descriptor API is required, so engines with and without
+// Object.defineProperty behave identically. Never patches host built-ins.
+var g = sessionGlobal();
+if (g) { g.eshttp = eshttp; }
 
 export default eshttp;
 

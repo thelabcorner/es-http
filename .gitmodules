@@ -1,0 +1,3 @@
+[submodule "deps/esabi"]
+	path = deps/esabi
+	url = https://github.com/thelabcorner/esabi.git

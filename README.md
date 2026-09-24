@@ -741,10 +741,10 @@ form in memory); prefer the native/cli lanes for production.
   is defensive (line/file caps, unknown keys ignored).
 - **Never executes user scripts:** the accel bundles eval only their own
   embedded ES3 source (never user data); the native lane returns JSON
-  envelopes only. No `kTypeScript` auto-eval is used.
+  envelopes only. No `ESABI_TYPE_SCRIPT` auto-eval is used.
 - **Memory:** all strings crossing the native boundary are UTF-8; response
   bodies are capped by `opts.maxBodyBytes` (50 MiB default). Host-owned
-  `kTypeString` buffers are freed by the host via `ESFreeMem` — the wrapper
+  `ESABI_TYPE_STRING` buffers are freed by the host via `ESFreeMem` — the wrapper
   never frees, and there is no caller-frees export (native-abi v2 removed
   the double-free hazard).
 
@@ -857,7 +857,8 @@ eshttp/
                            drivers native/cli/socket, ESON/ESB64 adapters,
                            core, index (facade, default export)
   native/
-    eshttp.c / eshttp.h         <- v2 engine + ABI header
+    eshttp.c / eshttp.h         <- v2 engine + ESABI-backed public ABI declarations
+  deps/esabi/                   <- pinned ESABI v0.3.0 ExternalObject ABI dependency
     eshttp-cli.c                <- separate-process transport
     BUILD.md, selftest.c        <- build + 166-check selftest
   test/
@@ -882,9 +883,7 @@ eshttp/
 - ESON and ESB64 (thelabcorner) - the vendored JSON and base64/UTF-8 engines
   (DLL-accelerated bundles), whose own corpora and WPT vectors pin the
   differential suites.
-- The Adobe ExternalObject direct-interface reference (canonical
-  `SoSharedLibDefs.h` samples from the CEP-Resources repo) - the native-abi
-  v2 shape.
+- [ESABI](https://github.com/thelabcorner/esabi) - the pinned open-source ExternalObject ABI declaration used by every native ESHTTP surface. Its compatibility research is grounded in Adobe's public ExternalObject documentation and CEP-Resources samples.
 - [buraktamturk/adobe-javascript-http-client](https://github.com/buraktamturk/adobe-javascript-http-client)
   (Burak Tamtürk) - the pioneer ExtendScript HTTP client, and the
   reference point es-http builds upon; his

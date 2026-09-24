@@ -1,6 +1,6 @@
 {
   "name": "eshttp",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "type": "commonjs",
   "description": "ES3 ExtendScript HTTP client for Adobe hosts (eshttp.dll native accelerator + Socket fallback). TypeScript source (src/*.ts) bundled by esbuild into dist/eshttp.jsx (ES3 IIFE, #include/$.evalFile safe) + dist/eshttp-core.esm.mjs (Node harnesses). This package.json stays `type: commonjs` because the QA harness (test/harness.js) is a CommonJS .js file; the ESM core bundle is a .mjs file and imports fine from .mjs harnesses or via dynamic import() from CommonJS.",
@@ -12,7 +12,16 @@
     "test": "node test/harness.js --all",
     "test:headless": "node test/harness.js",
     "test:net": "node test/harness.js --net",
-    "test:parity": "node test/parity/parity.mjs"
+    "test:parity": "node test/parity/parity.mjs",
+    "test:parity:esb64": "node test/parity/esb64-parity.mjs",
+    "test:never-throw": "node test/parity/never-throw-audit.mjs",
+    "test:audit-dist": "node test/parity/audit-dist.mjs",
+    "estc:check": "node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp.jsx --no-target && node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp-native-accel.jsx --no-target && node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp-native-accel-x86.jsx --no-target && node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp.accel-x64.jsx --no-target && node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp.accel-x86.jsx --no-target && node ../extendscript-toolchain/bin/estc.mjs check src/eshttp.jsxinc --no-target",
+    "estc:live-parse": "node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp.jsx --no-target --live --launch && node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp-native-accel.jsx --no-target --live --launch && node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp-native-accel-x86.jsx --no-target --live --launch && node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp.accel-x64.jsx --no-target --live --launch && node ../extendscript-toolchain/bin/estc.mjs check dist/eshttp.accel-x86.jsx --no-target --live --launch && node ../extendscript-toolchain/bin/estc.mjs check src/eshttp.jsxinc --no-target --live --launch",
+    "live:verify": "node test/live/run-live-gate.mjs",
+    "verify": "npm run typecheck && node eshttp-build.mjs --include-compat && node test/harness.js --all && npm run test:parity && npm run test:parity:esb64 && npm run test:never-throw && npm run test:audit-dist",
+    "release:gate": "npm run verify && npm run estc:check && npm run estc:live-parse && npm run live:verify",
+    "prepublishOnly": "npm run release:gate"
   },
   "devDependencies": {
     "esbuild": "^0.28.1",

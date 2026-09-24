@@ -211,7 +211,7 @@ function resetPipeState(): void {
 //      1500 ms); the driver pings via eshttp_pipe_request("ping", "", t).
 //   3. Request: one connection per request (worker disconnects after each);
 //      the driver calls eshttp_pipe_request("request", <job body or
-//      jobFile=<path>>, timeoutMs) and parses the normalized kTypeString report.
+//      jobFile=<path>>, timeoutMs) and parses the normalized ESABI_TYPE_STRING report.
 //   4. Stop: op=quit; fallback idle 120 s; last resort kill-by-pid (stale
 //      worker must never block a new spawn).
 // ---------------------------------------------------------------------------
@@ -299,7 +299,7 @@ function bridgeGet(): any {
   _bridgeProbed = true;
   if (typeof ExternalObject === "undefined") { return null; }
   try {
-    var b = new ExternalObject(_BRIDGE_LIB);
+    var b: any = new ExternalObject(_BRIDGE_LIB);
     if (!b) { return null; }
     if (typeof b.eshttp_pipe_request !== "function") { return null; }
     _bridge = b;

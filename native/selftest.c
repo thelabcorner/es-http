@@ -106,26 +106,26 @@ static int env_body_enc(const char* e, const char* enc) {
 }
 static int env_redirects(const char* e, int n) { char f[64]; snprintf(f, sizeof(f), "\"redirects\":%d", n); return s_contains(e, f); }
 
-/* native-abi v2: drive the exported direct-interface shape (TaggedData
+/* native-abi v2: drive the exported direct-interface shape (esabi_value
  * argv/retval). Returns the malloc'd envelope (ownership passes to the
  * caller, freed via ESFreeMem — exactly what the host does). */
 static const char* do_req(const char* m, const char* u, const char* h,
                           const char* b, const char* o) {
-    TaggedData argv[5];
-    TaggedData retval;
+    esabi_value argv[5];
+    esabi_value retval;
     const char* strs[5] = { m ? m : "", u ? u : "", h ? h : "",
                             b ? b : "", o ? o : "" };
     long i;
     memset(argv, 0, sizeof(argv));
     for (i = 0; i < 5; i++) {
-        argv[i].type = kTypeString;
-        argv[i].data.string = (char*)strs[i];
-        argv[i].filler = 0;
+        argv[i].type = ESABI_TYPE_STRING;
+        argv[i].payload.string_value = (char*)strs[i];
+        argv[i].reserved = 0;
     }
     memset(&retval, 0, sizeof(retval));
-    if (eshttp_request(argv, 5, &retval) != kESErrOK) { return NULL; }
-    if (retval.type != kTypeString) { return NULL; }
-    return retval.data.string; /* malloc'd; caller frees via ESFreeMem */
+    if (eshttp_request(argv, 5, &retval) != ESABI_OK) { return NULL; }
+    if (retval.type != ESABI_TYPE_STRING) { return NULL; }
+    return retval.payload.string_value; /* malloc'd; caller frees via ESFreeMem */
 }
 
 /* v2: no caller-side free — free the way the host does (ESFreeMem = free). */
@@ -398,36 +398,36 @@ static void url_into(char* out, size_t outsz, const char* host, const char* path
  * ========================================================================== */
 
 static void test_version(void) {
-    TaggedData argv[1];
-    TaggedData retval;
+    esabi_value argv[1];
+    esabi_value retval;
     const char* v;
     printf("[version] eshttp_version(0)\n");
     /* _f signature: one dummy arg (the host passes 0) */
     memset(argv, 0, sizeof(argv));
-    argv[0].type = kTypeDouble;
-    argv[0].data.fltval = 0.0;
-    argv[0].filler = 0;
+    argv[0].type = ESABI_TYPE_DOUBLE;
+    argv[0].payload.double_value = 0.0;
+    argv[0].reserved = 0;
     memset(&retval, 0, sizeof(retval));
-    CHECK(eshttp_version(argv, 1, &retval) == kESErrOK, "eshttp_version(0) returns kESErrOK");
-    CHECK(retval.type == kTypeString, "  eshttp_version(0) returns kTypeString");
-    v = retval.data.string ? retval.data.string : "";
+    CHECK(eshttp_version(argv, 1, &retval) == ESABI_OK, "eshttp_version(0) returns ESABI_OK");
+    CHECK(retval.type == ESABI_TYPE_STRING, "  eshttp_version(0) returns ESABI_TYPE_STRING");
+    v = retval.payload.string_value ? retval.payload.string_value : "";
     CHECK(strcmp(v, "1.0.0") == 0, "  eshttp_version(0) == \"1.0.0\"");
     CHECK(strcmp(ESHTTP_VERSION, "1.0.0") == 0, "ESHTTP_VERSION == \"1.0.0\"");
-    ESFreeMem(retval.data.string);   /* host frees kTypeString via ESFreeMem */
+    ESFreeMem(retval.payload.string_value);   /* host frees ESABI_TYPE_STRING via ESFreeMem */
 }
 
 static void test_available(void) {
-    TaggedData argv[1];
-    TaggedData retval;
+    esabi_value argv[1];
+    esabi_value retval;
     printf("[available] eshttp_available(0)\n");
     memset(argv, 0, sizeof(argv));
-    argv[0].type = kTypeDouble;
-    argv[0].data.fltval = 0.0;
-    argv[0].filler = 0;
+    argv[0].type = ESABI_TYPE_DOUBLE;
+    argv[0].payload.double_value = 0.0;
+    argv[0].reserved = 0;
     memset(&retval, 0, sizeof(retval));
-    CHECK(eshttp_available(argv, 1, &retval) == kESErrOK, "eshttp_available(0) returns kESErrOK");
-    CHECK(retval.type == kTypeInteger, "  eshttp_available(0) returns kTypeInteger");
-    CHECK(retval.data.intval == 1, "  eshttp_available(0) == 1 (WinHTTP backend inits)");
+    CHECK(eshttp_available(argv, 1, &retval) == ESABI_OK, "eshttp_available(0) returns ESABI_OK");
+    CHECK(retval.type == ESABI_TYPE_INTEGER, "  eshttp_available(0) returns ESABI_TYPE_INTEGER");
+    CHECK(retval.payload.signed_value == 1, "  eshttp_available(0) == 1 (WinHTTP backend inits)");
 }
 
 static void test_es_lifecycle(void) {
@@ -455,24 +455,24 @@ static void test_es_lifecycle(void) {
 }
 
 static void test_abi_request_shape(void) {
-    TaggedData argv[1];
-    TaggedData retval;
+    esabi_value argv[1];
+    esabi_value retval;
     printf("[abi] eshttp_request direct-interface shape\n");
-    /* wrong arg count -> catchable kESErrBadArgumentList (20), never negative */
+    /* wrong arg count -> catchable ESABI_ERR_BAD_ARGUMENTS (20), never negative */
     memset(argv, 0, sizeof(argv));
-    argv[0].type = kTypeString;
-    argv[0].data.string = (char*)"GET";
-    argv[0].filler = 0;
+    argv[0].type = ESABI_TYPE_STRING;
+    argv[0].payload.string_value = (char*)"GET";
+    argv[0].reserved = 0;
     memset(&retval, 0, sizeof(retval));
-    CHECK(eshttp_request(argv, 1, &retval) == kESErrBadArgumentList,
-          "  eshttp_request(1 arg) -> kESErrBadArgumentList");
-    /* non-string arg -> kESErrBadArgumentList (per _sssss signature cast) */
+    CHECK(eshttp_request(argv, 1, &retval) == ESABI_ERR_BAD_ARGUMENTS,
+          "  eshttp_request(1 arg) -> ESABI_ERR_BAD_ARGUMENTS");
+    /* non-string arg -> ESABI_ERR_BAD_ARGUMENTS (per _sssss signature cast) */
     memset(argv, 0, sizeof(argv));
-    argv[0].type = kTypeDouble;
-    argv[0].data.fltval = 42.0;
+    argv[0].type = ESABI_TYPE_DOUBLE;
+    argv[0].payload.double_value = 42.0;
     memset(&retval, 0, sizeof(retval));
-    CHECK(eshttp_request(argv, 5, &retval) == kESErrBadArgumentList,
-          "  eshttp_request(non-string arg) -> kESErrBadArgumentList");
+    CHECK(eshttp_request(argv, 5, &retval) == ESABI_ERR_BAD_ARGUMENTS,
+          "  eshttp_request(non-string arg) -> ESABI_ERR_BAD_ARGUMENTS");
 }
 
 static void test_hooks(void) {
