@@ -19,14 +19,17 @@
 //        ESB64_RUNTIME_PATH = ../esb64/dist/vendor-esb64-runtime.js
 //        accel              = ../esb64/native/bin/ESB64Native.dll @ v2
 //      (no stale espack/vendor runtime or accelerator can re-enter).
-//   5. cli staging (eshttp-cli.exe -> %LOCALAPPDATA%\eshttp) + opt-in
-//      include-compat copy (dist/eshttp.jsx -> src/eshttp.jsxinc).
+//   5. opt-in cli staging (eshttp-cli.exe -> %LOCALAPPDATA%\eshttp) +
+//      opt-in include-compat copy (dist/eshttp.jsx -> src/eshttp.jsxinc).
+//      Ordinary build/verify never mutates the per-user runtime installation.
 //   6. ESTC static check on the shipped artifacts that the workspace audit
 //      tracks (dist/eshttp.jsx, dist/eshttp-native-accel.jsx).
 //
 // FLAGS:
 //   --include-compat   ALSO copy dist/eshttp.jsx -> src/eshttp.jsxinc so
 //                      `#include "eshttp.jsxinc"` keeps working unchanged.
+//   --stage-cli        Explicitly stage native/eshttp-cli.exe into the per-user
+//                      runtime root. Never implied by ordinary build/verify.
 //   --accel-debug      Embed the PLAIN accel bundles (ESON.accel.jsx /
 //                      ESB64.accel.jsx, unminified) instead of the .min
 //                      flavors (default) in the ESM lane payloads.
@@ -37,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 
 var ROOT = dirname(fileURLToPath(import.meta.url));
 var DIST = join(ROOT, 'dist');
-var ENTRY = join(ROOT, 'src', 'index.ts');
+var ENTRY = join(ROOT, 'src', 'esm-entry.ts');
 var ESTC = join(ROOT, '..', 'extendscript-toolchain', 'bin', 'estc.mjs');
 var ESTC_CONFIG = './extendscript.estc.config.mjs';
 
@@ -583,7 +586,11 @@ function stageCliExe() {
   console.log('[eshttp-build] staged eshttp-cli.exe (' + data.length +
     ' bytes, PE verified) -> ' + dest);
 }
-stageCliExe();
+if (process.argv.indexOf('--stage-cli') >= 0) {
+  stageCliExe();
+} else {
+  console.log('[eshttp-build] cli staging skipped (pass --stage-cli for explicit per-user deployment)');
+}
 
 // 6. Release accel bundles.
 //    Default pipe accels: ONE bitness each, NO native DLL payloads.

@@ -4,8 +4,8 @@
  * ============================================================================
  * 1. starts the project's local mock server (test/mock-server.js, port 0);
  * 2. renders test/live/live-estc-gate.jsx with the artifact / base-URL /
- *    result-path tokens substituted and submits it through the bundled
- *    Illustrator COM tool (attach-first; --launch starts the host if needed);
+ *    result-path tokens substituted and submits it through COM Tool V2
+ *    (attach-first; explicit launch starts the host if needed);
  * 3. asserts the JSON side-channel: facade surface, pure in-engine
  *    _selftest(), __noNetwork hook, and ONE localhost request through the
  *    normally-resolved transport (status 200 + parsed body ok:true).
@@ -13,40 +13,23 @@
  * No external network is used. Exit 0 = gate PASS.
  */
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { openIllustratorV2 } from '../../../extendscript-toolchain/src/comtool-v2.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..', '..');
 const DIST = path.join(ROOT, 'dist');
 const ARTIFACT = path.join(DIST, 'eshttp.jsx');
-const COM_TOOL = path.join(ROOT, '..', 'agent-skills', 'illustrator-com-automation-skill', 'comtool', 'ILLUSTRATOR_COM_TOOL.py');
 const require = createRequire(import.meta.url);
 const mock = require(path.join(HERE, '..', 'mock-server.js'));
 
 function fail(msg) {
-    console.error('[live-gate] FAIL: ' + msg);
-    process.exit(1);
-}
-
-// Async spawn (NOT spawnSync): the in-process mock server must keep servicing
-// localhost while the COM tool drives Illustrator + eshttp-cli.exe.
-function runComTool(args, options) {
-    return new Promise((resolve) => {
-        const child = spawn('python', args, options);
-        let stdout = '';
-        let stderr = '';
-        child.stdout.on('data', (d) => { stdout += d; });
-        child.stderr.on('data', (d) => { stderr += d; });
-        child.on('error', (err) => resolve({ error: err, status: -1, stdout: stdout, stderr: stderr }));
-        child.on('close', (code) => resolve({ status: code, stdout: stdout, stderr: stderr }));
-    });
+    throw new Error('[live-gate] FAIL: ' + msg);
 }
 
 if (!fs.existsSync(ARTIFACT)) fail('canonical artifact missing: ' + ARTIFACT + ' (run npm run build)');
-if (!fs.existsSync(COM_TOOL)) fail('COM tool missing: ' + COM_TOOL);
 
 // Self-contained precondition: the cli tier resolves eshttp-cli.exe from the
 // per-user runtime root. The deterministic QA harness stages a fake shim
@@ -82,6 +65,13 @@ function ensureStagedCliWorker() {
 }
 ensureStagedCliWorker();
 
+let com = null;
+try {
+    com = openIllustratorV2({ launch: true, leaseTtlMs: 600000 });
+} catch (e) {
+    fail('COM Tool V2 session unavailable: ' + (e && e.message ? e.message : e));
+}
+
 const server = await mock.start({ name: 'live-gate', port: 0 });
 const resultPath = path.join(DIST, '.live-estc-gate.result.json');
 const probePath = path.join(DIST, '.live-estc-gate.probe.jsx');
@@ -96,25 +86,9 @@ try {
     try { fs.unlinkSync(resultPath); } catch (e) {}
 
     console.log('[live-gate] mock server: ' + server.url);
-    const r = await runComTool([COM_TOOL, 'eval', '--file', probePath, '--launch', '--timeout', '180'], {
-        cwd: path.join(ROOT, '..'),
-        windowsHide: true
-    });
-    if (r.error) fail('COM tool spawn failed: ' + r.error.message);
-
-    let envelope = null;
-    const raw = String(r.stdout || '').trim();
-    const start = raw.indexOf('{');
-    if (start >= 0) {
-        try { envelope = JSON.parse(raw.slice(start)); } catch (e) {}
-    }
-    if (!envelope) {
-        fail('COM tool produced no JSON envelope (exit ' + r.status + ')\nstdout: ' + raw.slice(0, 1200) +
-            '\nstderr: ' + String(r.stderr || '').slice(0, 1200));
-    }
-    if (envelope.ok !== true) {
-        fail('COM eval failed: ' + JSON.stringify(envelope).slice(0, 1200));
-    }
+    // Async V2 execution is required here: the in-process mock server must
+    // continue servicing localhost while Illustrator + eshttp-cli.exe run.
+    await com.runFileAsync(probePath, { timeoutMs: 180000 });
 
     if (!fs.existsSync(resultPath)) fail('probe result side-channel missing at ' + resultPath);
     const out = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
@@ -159,5 +133,6 @@ try {
     try { fs.unlinkSync(probePath); } catch (e) {}
     try { fs.unlinkSync(resultPath); } catch (e) {}
     try { await server.stop(); } catch (e) {}
+    try { if (com) com.close(); } catch (e) {}
 }
 process.exit(exitCode);

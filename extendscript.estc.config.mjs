@@ -51,7 +51,6 @@ export default {
   additionalTypes: ['./src/globals.d.ts', './types/estc-es3-vocabulary.d.ts'],
   entry: 'src/jsx-entry.ts',
   outfile: 'dist/eshttp.jsx',
-  globalName: '__ESHTTP_ENTRY__',
   target: 'illustrator',
   requireTarget: false,
   sourceLint: true,

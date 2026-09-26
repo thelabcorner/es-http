@@ -599,5 +599,16 @@ function circularRef(): any {
 var g = sessionGlobal();
 if (g) { g.eshttp = eshttp; }
 
-export default eshttp;
+// NOTE: deliberately no default/`export` of the facade namespace. The JSX
+// artifact is emitted through the ESTC pipeline (export-free side-effect entry,
+// src/jsx-entry.ts) and the facade is published onto the session global above +
+// bound by the ESTC footer. A module NAMESPACE export here would force esbuild
+// to synthesize the __toCommonJS/__export descriptor helpers that legacy
+// ExtendScript engines cannot run.
+//
+// The single NAMED `eshttp` export below is consumed as a VALUE import by the
+// dedicated src/esm-entry.ts (Node/ESM lane) and by src/jsx-entry.ts (JSX
+// lane). A value import of a named binding is inlined by esbuild and does NOT
+// trigger the export-namespace bridge.
+export { eshttp };
 
