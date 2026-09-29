@@ -17,10 +17,14 @@
 ## Verification
 
 - `npm run release:gate`: exit 0 on the final v1.2.0 release candidate.
-- Typecheck, deterministic build, full Node harness, ESON parity, ESB64 parity, never-throw audit, distribution audit, and manifest-v2 checks: pass.
-- ESTC static and live parse: pass for standalone, native accelerator, x64/x86 v2 roots, and jsxinc surfaces.
-- Manifest-v2 live proof: evaluating only the x64 root activates ESB64 -> ESON -> ESHTTP transitively and deduplicates the library identities on repeat evaluation.
-- Existing live localhost HTTP contract: pass on Adobe Illustrator 30.6.0 / ExtendScript 4.5.6 through COMTool V2.
+- Full Node QA harness: **205/205 assertions passed** across 10 suites and the Q1-Q12 matrix.
+- ESON parity: **753 assertions, 0 failures**; ESB64 parity: **103,711 checks passed** (`seed 42`, 5,000 fuzz iterations).
+- Never-throw audit: **736/736 public-entry checks** returned a Result; distribution audit found no forbidden tokens.
+- Manifest-v2 static contract: **PASS** for both x64/x86 identity, provenance, capability, order, and single-control-plane/dedup invariants.
+- ESTC static/live parse: all standalone, native accelerator, x64/x86 v2 root, and jsxinc surfaces pass on Adobe Illustrator 30.6.0 / ExtendScript 4.5.6.
+- Cold manifest-v2 proof: **PASS**; evaluating only the x64 root activates `ESB64 -> ESON -> ESHTTP`, preserves borrowed ESON native ownership, and deduplicates repeated evaluation.
+- Existing live localhost contract: **10/10 checks passed**, including the **46-check** in-engine self-test and a real 200 response through the CLI transport.
+- Final composed UTF-8 sizes: x64 **628,228 B**; x86 **574,312 B**.
 
 ## Release assets
 
