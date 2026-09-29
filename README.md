@@ -311,10 +311,10 @@ sources. Grab the runnable builds from the
 
 | You are... | Take this release | And this asset |
 |---|---|---|
-| Writing an Illustrator/InDesign/Photoshop script (any host) | latest stable | `dist/eshttp.jsx` (drop-in; default cli pipe lane works via the accel, socket fallback otherwise) |
-| Default https + firewall-escape, x64 host | latest stable | `dist/eshttp.accel-x64.jsx` (eval once; stages worker + bridge) |
-| Default https + firewall-escape, x86 host | latest stable | `dist/eshttp.accel-x86.jsx` (eval once; stages worker + bridge) |
-| In-process WinHTTP lane (non-firewalled host, opt-in) | latest stable | `dist/eshttp-native-accel.jsx` or `eshttp-x64.dll` / `eshttp-x86.dll` |
+| Writing an Illustrator/InDesign/Photoshop script (any host) | latest stable | `eshttp.jsx` (drop-in; default cli pipe lane works via the accel, socket fallback otherwise) |
+| Default https + firewall-escape, x64 host | latest stable | `eshttp.accel-x64.jsx` (eval once; stages worker + bridge) |
+| Default https + firewall-escape, x86 host | latest stable | `eshttp.accel-x86.jsx` (eval once; stages worker + bridge) |
+| In-process WinHTTP lane (non-firewalled host, opt-in) | latest stable | `eshttp-native-accel.jsx` or `eshttp-x64.dll` / `eshttp-x86.dll` |
 
 No C toolchain is needed to consume any release asset — the DLLs and EXE are
 prebuilt (MSVC, `/MT` static CRT). Sources + build instructions are in
