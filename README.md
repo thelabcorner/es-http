@@ -263,28 +263,27 @@ warm worker, process-isolated. Add `eshttp-native-accel.jsx` only for the
 narrow in-process-DLL case. The plain `dist/eshttp.jsx` alone gives you
 socket-only.
 
-**Artifact inventory (v1.1.0, per-bitness — no dead payloads):**
+**Artifact inventory (v1.2.0, per-bitness — no dead payloads):**
 
 | Artifact | Contents | Size |
 |---|---|---|
-| `dist/eshttp.jsx` | library IIFE only (codec accel payloads embedded) | 339 KB |
-| `dist/eshttp.accel-x64.jsx` | merged 1+n bundle: ESONJson + cli x64 worker + ipc-x64 bridge, one shared ESB64Native accel (deduped), ESON/ESB64 facades | 927 KB |
-| `dist/eshttp.accel-x86.jsx` | merged 1+n bundle: ESONJson + cli x86 worker + ipc-x86 bridge, one shared ESB64Native accel (deduped), ESON/ESB64 facades | 873 KB |
-| `dist/eshttp-native-accel.jsx` | eshttp-x64.dll (in-process WinHTTP lane, opt-in) | 614 KB |
-| `dist/eshttp-native-accel-x86.jsx` | eshttp-x86.dll (legacy 32-bit hosts, opt-in) | 576 KB |
-| `dist/eshttp-core.esm.mjs` | ESM core (Node harnesses) | 330 KB |
+| `dist/eshttp.jsx` | library IIFE only (codec accel payloads embedded) | 337,906 B |
+| `dist/eshttp.accel-x64.jsx` | ESPACK 0.5 manifest-v2 root: ESB64 → ESON → ESHTTP, plus ESONJson + x64 CLI worker + x64 IPC bridge | 628,228 B |
+| `dist/eshttp.accel-x86.jsx` | ESPACK 0.5 manifest-v2 root: ESB64 → ESON → ESHTTP, plus ESONJson + x86 CLI worker + x86 IPC bridge | 574,312 B |
+| `dist/eshttp-native-accel.jsx` | eshttp-x64.dll (in-process WinHTTP lane, opt-in) | 614,748 B |
+| `dist/eshttp-native-accel-x86.jsx` | eshttp-x86.dll (legacy 32-bit hosts, opt-in) | 577,064 B |
+| `dist/eshttp-core.esm.mjs` | ESM core (Node harnesses) | 357,261 B |
 
-**Merge-spec composition (v1.1.0).** The per-bitness accels are now **merged
-1+n bundles** per the espack merge spec: ONE loader object (no nested
-`var ESPAK`), ONE shared ESB64Native accelerator (deduped across the
-merged ESON/ESB64/eshttp manifests), and flat payloads — ESONJson + the
-worker + the bridge for the bundle's bitness only. The ESON and ESB64
-facades are appended before the library evals, so the codec adapters consume
-them by name (`sessionGlobal().ESON` / `.ESB64`) with the embedded-string
-lazy-eval as fallback — identical public behavior, never-throws preserved.
-The staging adapter extracts payloads **by name** (merged indexes are not
-stable). The v1.0.1 direct-composition accels are superseded by this merge
-(same filenames, new contents).
+**Manifest-v2 composition (v1.2.0).** The per-bitness accels are canonical
+ESPACK 0.5 root bundles with one persistent `$.global.ESPAK` control plane and
+the dependency-first library closure `ESB64 1.3.0 → ESON 1.3.0 → ESHTTP
+1.2.0`. Each manifest records exact UTF-8 library lengths/SHA-256 provenance,
+activation contracts, and explicit native/file capabilities. The x64 root
+carries ESONJson, the x64 CLI worker, and the x64 IPC bridge; the x86 root
+carries the corresponding x86 worker/bridge. Shared ESB64 native state and
+ESON's native capability are deduplicated by the control plane, ESON borrows
+ESPACK-owned native state, and repeated root evaluation reuses the resolved
+libraries rather than creating nested loaders.
 
 The binaries are release assets, not repo files (`.gitignore` excludes build
 artifacts). Each accel is an espack self-extracting bundle: eval once,
@@ -624,13 +623,13 @@ wrapper-transport overhead (0.064 vs 2.819 ms warm median; see
 [Performance](#performance)). The full contract is in
 [`docs/cli-transport.md`](docs/cli-transport.md).
 
-> **Live status of the v1.1.0 merged accels: PASS.** The merged 1+n bundles
-> (eshttp.accel-x64.jsx / eshttp.accel-x86.jsx) are verified live end-to-end
-> (T29 re-gate, Illustrator 30.6.0): worker stages as `eshttp-cli.exe` (pipe
-> lane active), the ESB64 facade codec lane runs (surface-complete check;
-> `base64Encode("f") === "Zg=="` never throws), and Wikipedia's W SVG fetched
-> through the real worker over the named pipe — OK|cli|200|2440, zero
-> errors.
+> **Live status of the v1.2.0 manifest-v2 roots: PASS.** On Illustrator
+> 30.6.0 / ExtendScript 4.5.6, the cold x64 root activated
+> `ESB64 → ESON → ESHTTP`, preserved borrowed ESON native ownership, and
+> deduplicated repeated evaluation. The existing localhost transport contract
+> also passed 10/10 checks, including the 46-check in-engine self-test and a
+> real HTTP 200 response through the CLI transport; both x64/x86 root surfaces
+> passed ESTC live parsing.
 
 **Stale work-dir files.** The cli lane writes `ESHTTP_*.job` / `ESHTTP_*.done`
 to `%TEMP%\opencode`. The wrapper sweeps stale files at host startup; between
