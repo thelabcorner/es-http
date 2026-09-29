@@ -37,9 +37,13 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build as espackBuildManifest, makeManifest } from '../espack/espack-build.mjs';
+import { libraryFromFile } from '../espack/espack-libraries.mjs';
+import { merge as espackMerge } from '../espack/espack-merge.mjs';
 
 var ROOT = dirname(fileURLToPath(import.meta.url));
 var DIST = join(ROOT, 'dist');
+var ESHTTP_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
 var ENTRY = join(ROOT, 'src', 'esm-entry.ts');
 var ESTC = join(ROOT, '..', 'extendscript-toolchain', 'bin', 'estc.mjs');
 var ESTC_CONFIG = './extendscript.estc.config.mjs';
@@ -171,6 +175,22 @@ function blankJsStringLiteral(text, varName) {
   }
   var blank = text.substring(start, i + 1).replace(/[^\n]/g, ' ');
   return text.substring(0, start) + blank + text.substring(i + 1);
+}
+
+function emptyJsStringLiteral(text, varName) {
+  var marker = 'var ' + varName;
+  var at = text.indexOf(marker);
+  if (at < 0) { return text; }
+  var start = text.indexOf('"', at);
+  if (start < 0) { return text; }
+  var i = start + 1;
+  for (; i < text.length; i++) {
+    var c = text.charAt(i);
+    if (c === '\\') { i++; continue; }
+    if (c === '"') { break; }
+  }
+  if (i >= text.length) { throw new Error('[eshttp-build] unterminated payload literal for ' + varName); }
+  return text.substring(0, start) + '""' + text.substring(i + 1);
 }
 
 // Byte-fidelity gate: the ESTC normalize pass must not alter the embedded
@@ -323,89 +343,6 @@ function buildAccelBundle(name, embeds, stageCalls, banner) {
   console.log('[eshttp-build] wrote ' + join(DIST, name) + ' (' + accelOut.length + ' bytes)');
 }
 
-// The ESB64 facade adapter (loader-free): attaches the shared ESB64Native
-// accelerator by NAME (merged payload indexes are not stable) to the slim
-// ESB64 atob/btoa runtime and keeps the ES3 lane when the resolved payload
-// is not the shared accelerator.
-var ESB64_FACADE_ADAPTER = [
-  '(function () {',
-  '  if (typeof ESPAK !== "object" || !ESPAK || typeof ESPAK.attach !== "function") return;',
-  '  var origAtob = ESB64.atob;',
-  '  var origBtoa = ESB64.btoa;',
-  '  var NON_LATIN1_RE = /[^\\x00-\\xff]/;',
-  '  var NON_ASCII_RE = /[^\\x01-\\x7f]/;',
-  '  function invalidCharacter(msg) {',
-  '    var e = new Error(msg);',
-  '    try { e.name = "InvalidCharacterError"; } catch (ignore) {}',
-  '    return e;',
-  '  }',
-  '  var accel = ESPAK.attach({',
-  '    es3: null,',
-  '    buildNative: function (lib) {',
-  '      // Merged-bundle guard: ESPAK.attach resolves payload 0 when payloads',
-  '      // exist (ESONJson in the merged bundle), NOT the shared ESB64Native',
-  '      // accel. Only swap to native when the lib actually exposes the codec',
-  '      // methods (b64decode/b64encode); otherwise keep the ES3 lane (which is',
-  '      // spec-exact by parity - the native swap is a speed nicety, not a',
-  '      // correctness requirement).',
-  '      if (!lib || typeof lib.b64decode !== "function" || typeof lib.b64encode !== "function") return null;',
-  '      return {',
-  '        atob: function (text) {',
-  '          var raw = String(text);',
-  '          if (NON_ASCII_RE.test(raw)) return origAtob(raw);',
-  '          var out;',
-  '          try { out = lib.b64decode(raw); }',
-  '          catch (e) {',
-  '            if (typeof e.number === "number" && e.number === 10001) {',
-  '              throw invalidCharacter("atob: the string to be decoded is not correctly encoded");',
-  '            }',
-  '            throw e;',
-  '          }',
-  '          if (typeof out !== "string") return origAtob(raw);',
-  '          return out;',
-  '        },',
-  '        btoa: function (text) {',
-  '          var raw = String(text);',
-  '          if (raw.indexOf("\\0") >= 0 || NON_LATIN1_RE.test(raw)) return origBtoa(raw);',
-  '          var out;',
-  '          try { out = lib.b64encode(raw); }',
-  '          catch (e) {',
-  '            if (typeof e.number === "number" && e.number === 10002) {',
-  '              throw invalidCharacter("btoa: the string to be encoded contains characters outside of the Latin1 range");',
-  '            }',
-  '            throw e;',
-  '          }',
-  '          return out;',
-  '        }',
-  '      };',
-  '    },',
-  '    onMode: function (mode, lib, impl) {',
-  '      // Guard: never swap to a null/broken impl (e.g. when buildNative',
-  '      // returned null because the resolved lib was a payload, not the',
-  '      // shared accel). The ES3 lane is spec-exact; the native swap is a',
-  '      // speed nicety only and must never break the codec contract.',
-  '      if (!impl || typeof impl.atob !== "function" || typeof impl.btoa !== "function") return;',
-  '      if (mode === "native") {',
-  '        ESB64.atob = impl.atob;',
-  '        ESB64.btoa = impl.btoa;',
-  '        ESB64.encodeLatin1 = impl.btoa;',
-  '        ESB64.decodeLatin1 = impl.atob;',
-  '        var g = null;',
-  '        try { if (typeof $ !== "undefined" && $.global) { g = $.global; } } catch (e1) {}',
-  '        if (g) {',
-  '          if (g.atob === origAtob) g.atob = impl.atob;',
-  '          if (g.btoa === origBtoa) g.btoa = impl.btoa;',
-  '        }',
-  '      }',
-  '    }',
-  '  });',
-  '  if (accel && accel.mode) ESB64.acceleration = accel.mode;',
-  '  var g = null;',
-  '  try { if (typeof $ !== "undefined" && $.global) { g = $.global; } } catch (e1) {}',
-  '  if (g) { g.ESB64 = ESB64; g.ESPAK = ESPAK; }',
-  '}());',
-  ''
-].join('\n');
 
 // The eshttp staging adapter for the MERGED bundle: extract by NAME (payload
 // indexes are not stable after the merge - ESONJson is index 0). NOTE:
@@ -439,40 +376,33 @@ function accelAdapterMerged(stageCalls) {
   return lines.join('\n');
 }
 
-// esb64's Lane C manifest (accel-only - the shared ESB64Native accel, no
-// payloads). Schema v1 per the merge spec. The accelerator is PINNED to the
-// current ../esb64/native/bin/ESB64Native.dll; if a sibling manifest carries
-// a different build of the accelerator the build stops (stale espack/vendor
-// accelerators must never silently re-enter a composite).
-function esb64Manifest() {
-  var pinned = accelFromCurrentDll();
-  var esonManifestPath = join(ROOT, '..', 'eson', 'dist', 'ESON.manifest.json');
-  if (existsSync(esonManifestPath)) {
-    var esonAccel = null;
-    try { esonAccel = JSON.parse(readFileSync(esonManifestPath, 'utf8')).accel; } catch (e) { esonAccel = null; }
-    if (esonAccel && !accelMatches(esonAccel, pinned)) {
-      console.error('[eshttp-build] ACCELERATOR DRIFT: ../eson/dist/ESON.manifest.json carries a ' +
-        'different ESB64Native build than the pinned ' + ESB64_NATIVE_DLL +
-        ' - the sibling eson manifest must pin the canonical accelerator before eshttp composes.');
-      process.exit(1);
-    }
-  }
-  return { format: 'espack-manifest', version: 1, bundleName: 'esb64', cacheDir: '', chunkSize: 24576, accel: pinned, payloads: [] };
+// ESPACK manifest-v2 library closure for the shipped x64/x86 distributions.
+function buildLibrary(id, version, globalName, path, contract, requires, provenance) {
+  return libraryFromFile({ id: id, version: version, global: globalName, path: path,
+    contract: contract, requires: requires || [], provenance: provenance });
 }
 
-function buildMergedAccel(arch, cliExe, ipcDll, stageCalls, banner) {
-  var espackBuild = join(ROOT, '..', 'espack', 'espack-build.mjs');
-  var espackMerge = join(ROOT, '..', 'espack', 'espack-merge.mjs');
-  var esonManifest = join(ROOT, '..', 'eson', 'dist', 'ESON.manifest.json');
+function buildManifestV2Accel(arch, cliExe, ipcDll, banner) {
+  var espackBuildPath = join(ROOT, '..', 'espack', 'espack-build.mjs');
   var esonFacade = join(ROOT, '..', 'eson', 'dist', 'ESON.facade.jsx');
-  var esb64Runtime = join(ROOT, '..', 'esb64', 'dist', 'vendor-esb64-runtime.js');
+  var esonManifestPath = join(ROOT, '..', 'eson', 'dist', 'ESON.manifest.json');
+  var esonPackage = JSON.parse(readFileSync(join(ROOT, '..', 'eson', 'package.json'), 'utf8'));
+  var esb64Facade = join(ROOT, '..', 'esb64', 'dist', 'ESB64.facade.jsx');
+  var esb64Package = JSON.parse(readFileSync(join(ROOT, '..', 'esb64', 'package.json'), 'utf8'));
   var facade = join(DIST, 'eshttp.jsx');
   var outName = 'eshttp.accel-' + arch + '.jsx';
+  var manifestPath = join(DIST, 'eshttp.accel-' + arch + '.manifest.json');
+  var manifestName = '.eshttp-' + arch + '.manifest.json';
+  var scratchBundle = join(DIST, '.eshttp-' + arch + '-scratch.jsx');
   var missing = [];
-  if (!existsSync(espackMerge)) { missing.push('espack-merge.mjs (sibling espack repo)'); }
-  if (!existsSync(esonManifest)) { missing.push('eson/dist/ESON.manifest.json (run eson-build.mjs --accel)'); }
+  if (esb64Package.version !== '1.3.0' || esonPackage.version !== '1.3.0' || ESHTTP_VERSION !== '1.2.0') {
+    throw new Error('[eshttp-build] expected ESB64 1.3.0 -> ESON 1.3.0 -> ESHTTP 1.2.0; found ' +
+      esb64Package.version + ' -> ' + esonPackage.version + ' -> ' + ESHTTP_VERSION);
+  }
+  if (!existsSync(espackBuildPath)) { missing.push('espack-build.mjs (sibling espack repo)'); }
   if (!existsSync(esonFacade)) { missing.push('eson/dist/ESON.facade.jsx'); }
-  if (!existsSync(esb64Runtime)) { missing.push('esb64/dist/vendor-esb64-runtime.js (slim atob/btoa runtime)'); }
+  if (!existsSync(esonManifestPath)) { missing.push('eson/dist/ESON.manifest.json'); }
+  if (!existsSync(esb64Facade)) { missing.push('esb64/dist/ESB64.facade.jsx'); }
   if (!existsSync(cliExe)) { missing.push(cliExe); }
   if (!existsSync(ipcDll)) { missing.push(ipcDll); }
   if (!existsSync(facade)) { missing.push('dist/eshttp.jsx'); }
@@ -481,38 +411,65 @@ function buildMergedAccel(arch, cliExe, ipcDll, stageCalls, banner) {
     return;
   }
 
-  // 1. The eshttp manifest (cli + ipc per bitness) via espack-build --manifest-out.
-  var eshttpManifest = join(DIST, '.eshttp-' + arch + '.manifest.json');
-  var scratchBundle = join(DIST, '.eshttp-' + arch + '-scratch.jsx');
-  execFileSync(process.execPath, [espackBuild, '--embed', cliExe, '--embed', ipcDll,
-    '--accel', ESB64_NATIVE_DLL, '--accel-version', ESB64_ACCEL_VERSION,
-    '--out', scratchBundle, '--name', 'eshttp', '--manifest-out', eshttpManifest, '--quiet'],
-    { stdio: 'inherit', env: espackEnv() });
+  var esb64 = buildLibrary('esb64', esb64Package.version, 'ESB64', esb64Facade,
+    [{ name: 'atob', type: 'function' }, { name: 'btoa', type: 'function' },
+      { name: 'utf8Decode', type: 'function' }, { name: 'utf8Encode', type: 'function' }], [],
+    { package: 'esb64', repository: 'https://github.com/thelabcorner/es-b64.git', artifact: 'dist/ESB64.facade.jsx' });
+  var eson = buildLibrary('eson', esonPackage.version, 'ESON', esonFacade,
+    [{ name: 'parse', type: 'function' }, { name: 'stringify', type: 'function' }],
+    [{ id: 'esb64', range: '^' + esb64Package.version }],
+    { package: 'eson', repository: 'https://github.com/thelabcorner/eson.git', artifact: 'dist/ESON.facade.jsx' });
+  // The stand-alone facade carries fallback sibling bundles as string literals
+  // for non-composed use. Strip only those data literals from the composed
+  // library; v2 dependencies provide the actual ESON/ESB64 facades.
+  var composedFacade = join(DIST, '.eshttp-v2-facade.jsx');
+  var composedFacadeText = emptyJsStringLiteral(emptyJsStringLiteral(readFileSync(facade, 'utf8'),
+    'ESON_ACCEL_BUNDLE'), 'ESB64_ACCEL_BUNDLE');
+  writeFileSync(composedFacade, composedFacadeText, 'utf8');
+  var eshttp = buildLibrary('eshttp', ESHTTP_VERSION, 'eshttp', composedFacade,
+    [{ name: 'request', type: 'function' }, { name: 'get', type: 'function' },
+      { name: 'json', type: 'function' }, { name: 'configure', type: 'function' }],
+    [{ id: 'eson', range: '^' + esonPackage.version }],
+    { package: 'eshttp', repository: 'https://github.com/thelabcorner/es-http.git', artifact: 'dist/.eshttp-v2-facade.jsx' });
 
-  // 2. The esb64 manifest (accel-only, PINNED to the current sibling DLL).
-  var esb64ManifestPath = join(DIST, '.esb64.manifest.json');
-  writeFileSync(esb64ManifestPath, JSON.stringify(esb64Manifest(), null, 2) + '\n');
-
-  // 3. Merge: ONE loader, ONE shared accel (pinned current build), N payloads flat.
-  var mergedLoader = join(DIST, '.eshttp-' + arch + '-merged-loader.jsx');
-  execFileSync(process.execPath, [espackMerge, '--merge', esonManifest, esb64ManifestPath,
-    eshttpManifest, '--out', mergedLoader, '--name', 'eshttp', '--quiet'],
-    { stdio: 'inherit', env: espackEnv() });
-
-  // 4. Compose: merged loader + ESON.facade + slim ESB64 runtime (atob/btoa
-  //    only - no utf8/install/benchmark surface) + native adapter + eshttp
-  //    library + staging adapter. The slim runtime keeps the composite free
-  //    of the full-facade fixture strings while the adapter attaches the
-  //    shared ESB64Native accelerator by name.
-  var loaderText = readFileSync(mergedLoader, 'utf8');
-  var esonFacadeText = readFileSync(esonFacade, 'utf8');
-  var esb64FacadeText = readFileSync(esb64Runtime, 'utf8') + '\n' + ESB64_FACADE_ADAPTER;
-  var facadeText = readFileSync(facade, 'utf8');
-  var adapterText = accelAdapterMerged(stageCalls);
-  var accelOut = banner + loaderText + '\n' + esonFacadeText + '\n' + esb64FacadeText + '\n' +
-    facadeText + '\n' + adapterText;
+  // ESPACK's native build helper determines kind=file/dll and binds exact binary
+  // bytes. The temporary manifest only contributes payload and shared accel data.
+  var payloadManifest = join(DIST, manifestName);
+  espackBuildManifest({ embeds: [cliExe, ipcDll], out: scratchBundle, name: 'eshttp',
+    accel: ESB64_NATIVE_DLL, accelVersion: ESB64_ACCEL_VERSION, manifestOut: payloadManifest, quiet: true });
+  var payloads = JSON.parse(readFileSync(payloadManifest, 'utf8')).payloads;
+  var esonManifest = JSON.parse(readFileSync(esonManifestPath, 'utf8'));
+  var pinnedAccel = accelFromCurrentDll();
+  if (!accelMatches(esonManifest.accel, pinnedAccel)) {
+    throw new Error('[eshttp-build] ESON manifest accelerator differs from the pinned ESB64Native build');
+  }
+  // ESON's native JSON DLL remains a typed ESPACK payload capability; the
+  // library artifact itself is composed separately through its v2 identity.
+  payloads = esonManifest.payloads.concat(payloads);
+  var sourceManifest = {
+    format: 'espack-manifest', version: 2, bundleName: 'eshttp', cacheDir: '', chunkSize: 24576,
+    accel: accelFromCurrentDll(), payloads: payloads,
+    composer: { name: 'espack', version: '0.5.0' }, libraries: [esb64, eson, eshttp],
+    entries: [{ id: 'eshttp', range: '=' + ESHTTP_VERSION }],
+    capabilities: [
+        { id: 'eshttp.cli.file', provider: 'eshttp', mode: 'required', payloads: [arch === 'x86' ? 'eshttp-cli-x86' : 'eshttp-cli'], accel: null },
+      { id: 'eshttp.ipc.native', provider: 'eshttp', mode: 'required', payloads: ['eshttp-ipc-' + arch], accel: null },
+      { id: 'eshttp.esb64-native', provider: 'esb64', mode: 'optional', payloads: [], accel: 'ESB64Native' },
+      { id: 'eshttp.eson-native', provider: 'eson', mode: 'optional', payloads: ['ESONJson'], accel: null }
+    ]
+  };
+  // makeManifest supplies manifest-v2 payload/accelerator hashes and validates
+  // the complete dependency/capability metadata before merge consumes it.
+  var v2 = makeManifest(sourceManifest);
+  var inputManifest = join(DIST, '.eshttp-' + arch + '-v2-input.json');
+  writeFileSync(inputManifest, JSON.stringify(v2, null, 2) + '\n');
+  var built = espackMerge({ manifests: [inputManifest], entries: [{ id: 'eshttp', range: '=' + ESHTTP_VERSION }],
+    out: join(DIST, outName), manifestOut: manifestPath, name: 'eshttp', deferB64: true });
+  var stagedCalls = [{ idx: arch === 'x86' ? 'eshttp-cli-x86' : 'eshttp-cli', target: 'eshttp-cli.exe' },
+    { idx: 'eshttp-ipc-' + arch, target: 'eshttp-ipc.dll' }];
+  var accelOut = banner + built.text + '\n' + accelAdapterMerged(stagedCalls);
   writeFileSync(join(DIST, outName), accelOut);
-  console.log('[eshttp-build] wrote ' + join(DIST, outName) + ' (merged, ' + accelOut.length + ' bytes)');
+  console.log('[eshttp-build] wrote ' + join(DIST, outName) + ' (manifest v2, ' + accelOut.length + ' bytes)');
 }
 
 // ---- 0. pinned siblings ----------------------------------------------------
@@ -618,19 +575,11 @@ console.log('[eshttp-build] retired dist/eshttp.accel.jsx (4-payload monolith) -
 
 // 7. MERGE-SPEC accel composition (ONE loader, ONE shared accelerator,
 //    N payloads FLAT) with the pinned current ESB64 runtime + accelerator.
-buildMergedAccel('x64', join(ROOT, 'native', 'eshttp-cli.exe'), join(ROOT, 'native', 'eshttp-ipc-x64.dll'),
-  [
-    { idx: 'eshttp-cli', target: 'eshttp-cli.exe' },
-    { idx: 'eshttp-ipc-x64', target: 'eshttp-ipc.dll' }
-  ],
-  '// eshttp.accel-x64.jsx - v1.1.0 MERGED accel (espack-merge: eson + esb64 + eshttp manifests -> ONE loader, ONE shared ESB64Native accel, flat payloads ESONJson + eshttp-cli + eshttp-ipc-x64; loader-free facades appended; NO nested ESPAK bundles)\n');
+buildManifestV2Accel('x64', join(ROOT, 'native', 'eshttp-cli.exe'), join(ROOT, 'native', 'eshttp-ipc-x64.dll'),
+  '// eshttp.accel-x64.jsx - ESPACK 0.5 manifest-v2 composition: ESB64 1.3.0 -> ESON 1.3.0 -> ESHTTP ' + ESHTTP_VERSION + '.\n');
 
-buildMergedAccel('x86', join(ROOT, 'native', 'eshttp-cli-x86.exe'), join(ROOT, 'native', 'eshttp-ipc-x86.dll'),
-  [
-    { idx: 'eshttp-cli', target: 'eshttp-cli.exe' },
-    { idx: 'eshttp-ipc-x86', target: 'eshttp-ipc.dll' }
-  ],
-  '// eshttp.accel-x86.jsx - v1.1.0 MERGED accel (x86: eshttp-cli + eshttp-ipc-x86 payloads, flat)\n');
+buildManifestV2Accel('x86', join(ROOT, 'native', 'eshttp-cli-x86.exe'), join(ROOT, 'native', 'eshttp-ipc-x86.dll'),
+  '// eshttp.accel-x86.jsx - ESPACK 0.5 manifest-v2 composition: ESB64 1.3.0 -> ESON 1.3.0 -> ESHTTP ' + ESHTTP_VERSION + '.\n');
 
 // 8. ESTC static gate on every shipped JSX artifact (audited outputs +
 //    per-bitness accels).

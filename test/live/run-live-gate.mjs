@@ -16,7 +16,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openIllustratorV2 } from '../../../extendscript-toolchain/src/comtool-v2.mjs';
+import { openIllustratorComTool } from '../../../extendscript-toolchain/src/comtool.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..', '..');
@@ -67,9 +67,9 @@ ensureStagedCliWorker();
 
 let com = null;
 try {
-    com = openIllustratorV2({ launch: true, leaseTtlMs: 600000 });
+    com = await openIllustratorComTool({ launch: true, leaseTtlMs: 600000 });
 } catch (e) {
-    fail('COM Tool V2 session unavailable: ' + (e && e.message ? e.message : e));
+    fail('COMTool session unavailable: ' + (e && e.message ? e.message : e));
 }
 
 const server = await mock.start({ name: 'live-gate', port: 0 });
@@ -86,9 +86,9 @@ try {
     try { fs.unlinkSync(resultPath); } catch (e) {}
 
     console.log('[live-gate] mock server: ' + server.url);
-    // Async V2 execution is required here: the in-process mock server must
+    // Async COMTool execution is required here: the in-process mock server must
     // continue servicing localhost while Illustrator + eshttp-cli.exe run.
-    await com.runFileAsync(probePath, { timeoutMs: 180000 });
+    await com.runFile(probePath, { timeoutMs: 180000 });
 
     if (!fs.existsSync(resultPath)) fail('probe result side-channel missing at ' + resultPath);
     const out = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
@@ -133,6 +133,6 @@ try {
     try { fs.unlinkSync(probePath); } catch (e) {}
     try { fs.unlinkSync(resultPath); } catch (e) {}
     try { await server.stop(); } catch (e) {}
-    try { if (com) com.close(); } catch (e) {}
+    try { if (com) await com.close(); } catch (e) {}
 }
 process.exit(exitCode);

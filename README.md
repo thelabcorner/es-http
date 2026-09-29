@@ -55,6 +55,21 @@ Deterministic random streams and sampling for ExtendScript.
 **[ESUUID](https://github.com/thelabcorner/es-uuid)**  
 RFC 9562 UUID generation, parsing, and conversion for ExtendScript.
 
+**[ESENV](https://github.com/thelabcorner/es-env)**  
+Environment and capability detection for ExtendScript.
+
+**[ESPATH](https://github.com/thelabcorner/es-path)**  
+Deterministic Windows/POSIX path and RFC 8089 file-URI transformations.
+
+**[ESFS](https://github.com/thelabcorner/es-fs)**  
+Synchronous ExtendScript File/Folder I/O with explicit text, BINARY, and replacement semantics.
+
+**[ESHASH](https://github.com/thelabcorner/es-hash)**  
+CRC-32/ISO-HDLC and SHA-256 for byte strings and UTF-8 text.
+
+**[ESLOG](https://github.com/thelabcorner/es-log)**  
+Structured logging with bounded text and JSONL sinks.
+
 </td>
 <td width="50%" valign="top">
 
@@ -80,6 +95,9 @@ Native state and durable storage for Adobe tooling.
 
 **[COMTool](https://github.com/thelabcorner/COMTool)**  
 Guarded COM, ExtendScript, plug-in, and debugger automation for Adobe desktop apps.
+
+**ESsemble** <sub>coming soon</sub>  
+Typed framework, resolver, and composition layer for the ExtendScript toolkit.
 
 **ESOBF** <sub>coming soon</sub>  
 Obfuscation for hardened JSX distribution.
@@ -621,16 +639,18 @@ sessions on a long-lived machine, finished `.done` files may accumulate
 is claimed by the next scan). Clear the folder manually if it bothers you;
 nothing in the release path reads stale files.
 
-### Vendored codecs (JSON / base64 / UTF-8)
+### Composed codecs (JSON / base64 / UTF-8)
 
 `eshttp.json` and the base64/UTF-8 helpers delegate to the **ESON** and
-**ESB64** DLL-accelerated self-extracting bundles (embedded in
-`dist/eshttp.jsx`). On a host that can load the accel DLL, the codec lanes
-run native; on any load/extract failure the bundle falls back to its internal
-ES3 lane and exposes the same facade — the never-throws design holds by
-construction. Parity is pinned by the differential suites (753/0 JSON with
-D1–D7 documented divergences; 103,711/0 base64/UTF-8). See
-[Validation](#validation).
+**ESB64** facades. The x64/x86 accelerated distributions compose stable
+manifest-v2 libraries in dependency order (ESB64 1.3.0 → ESON 1.3.0 → ESHTTP
+1.2.0), with one ESPAK 0.5.0 control plane and byte-exact UTF-8/SHA-256
+provenance. Native ESON, CLI and IPC payloads are declared as capabilities;
+the CLI remains a file payload and IPC remains an ExternalObject DLL. The
+ESON adapter borrows the ESPAK-managed native library rather than claiming
+ownership. Failed extraction or activation retains the codec ES3 behavior.
+Parity is pinned by the differential suites (753/0 JSON with D1–D7 documented
+divergences; 103,711/0 base64/UTF-8). See [Validation](#validation).
 
 ---
 
@@ -668,12 +688,13 @@ problem, es-http's native/pipe lanes are the answer.
 | Check | Command | Result |
 |---|---|---|
 | Typecheck | `npx tsc --noEmit -p .` | 0 errors |
-| Test suite, ESM lane | `node test/harness.js --all` | **204 pass / 0 fail** |
-| Test suite, IIFE lane (shipping `dist/eshttp.jsx`) | `node test/harness.js --all` | **204 pass / 0 fail** |
+| Test suite, ESM lane | `node test/harness.js --all` | **205 pass / 0 fail** |
+| Test suite, IIFE lane (shipping `dist/eshttp.jsx`) | `node test/harness.js --all` | **205 pass / 0 fail** |
 | JSON differential vs ESON | `node test/parity/parity.mjs` | **753 / 0** (D1–D7 documented divergences as contracted) |
 | base64/UTF-8 differential vs ESB64 | `node test/parity/esb64-parity.mjs` | **103,711 / 0** |
 | Never-throw audit | `node test/parity/never-throw-audit.mjs` | **736 / 0** |
 | Dist output audit (forbidden tokens) | `node test/parity/audit-dist.mjs` | **0 tokens / 0 suspects** |
+| Accelerated manifest-v2 contract | `npm run test:manifest-v2` | **PASS** x64/x86 identity, byte/SHA-256 provenance, capabilities, dependency order, single-loader dedup |
 | Native selftest (statically-linked engine) | `eshttp-selftest.exe` | **166 pass / 0 fail** |
 | ES3 scanner | skill scanner | PASS (only the ratified bannerless `#target` rule) |
 | **Live gate, Illustrator 30.6.0** | live COM probe | **PASS** — Wikipedia W SVG fetched through the firewall (status 200, 2440 B) and placed into a document as paths (pageDelta 1); `transport=native` and `transport=cli` both verified live |
