@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -7,6 +8,16 @@ import { validateManifest } from '../../espack/espack-build.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const DIST = join(ROOT, 'dist');
+const esonDependencyManifest = JSON.parse(
+  readFileSync(join(ROOT, '..', 'eson', 'dist', 'ESON.manifest.json'), 'utf8')
+);
+const dependencyCommits = new Map(
+  esonDependencyManifest.libraries.map((lib) => [lib.id, lib.provenance && lib.provenance.commit])
+);
+const eshttpCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+  cwd: ROOT,
+  encoding: 'utf8'
+}).trim();
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
@@ -25,6 +36,15 @@ for (const arch of ['x64', 'x86']) {
   assert.equal(manifest.libraries[1].version, '1.3.0', `${arch}: ESON identity`);
   assert.deepEqual(manifest.libraries[1].requires, [{ id: 'esb64', range: '^1.3.0', optional: false }]);
   assert.deepEqual(manifest.libraries[2].requires, [{ id: 'eson', range: '^1.3.0', optional: false }]);
+  assert.match(manifest.libraries[0].provenance.commit, /^[0-9a-f]{40}$/i, `${arch}: ESB64 commit provenance`);
+  assert.match(manifest.libraries[1].provenance.commit, /^[0-9a-f]{40}$/i, `${arch}: ESON commit provenance`);
+  assert.match(manifest.libraries[2].provenance.commit, /^[0-9a-f]{40}$/i, `${arch}: ESHTTP commit provenance`);
+  assert.equal(manifest.libraries[0].provenance.commit, dependencyCommits.get('esb64'),
+    `${arch}: ESB64 provenance matches canonical ESON closure`);
+  assert.equal(manifest.libraries[1].provenance.commit, dependencyCommits.get('eson'),
+    `${arch}: ESON provenance matches canonical ESON closure`);
+  assert.equal(manifest.libraries[2].provenance.commit, eshttpCommit,
+    `${arch}: ESHTTP provenance matches exact source commit`);
   assert.deepEqual(manifest.libraries.map((lib) => lib.activation.global), ['ESB64', 'ESON', 'eshttp']);
   assert.deepEqual(manifest.libraries[0].activation.contract.map((row) => row.name),
     ['atob', 'btoa', 'utf8Decode', 'utf8Encode']);

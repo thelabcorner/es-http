@@ -411,14 +411,36 @@ function buildManifestV2Accel(arch, cliExe, ipcDll, banner) {
     return;
   }
 
+  var esonManifest = JSON.parse(readFileSync(esonManifestPath, 'utf8'));
+  function dependencyProvenance(id) {
+    var libs = Array.isArray(esonManifest.libraries) ? esonManifest.libraries : [];
+    for (var i = 0; i < libs.length; i++) {
+      if (libs[i].id === id) {
+        var provenance = libs[i].provenance || {};
+        if (!/^[0-9a-f]{40}$/i.test(String(provenance.commit || ''))) {
+          throw new Error('[eshttp-build] dependency ' + id + ' manifest is missing exact Git commit provenance');
+        }
+        return provenance;
+      }
+    }
+    throw new Error('[eshttp-build] dependency ' + id + ' missing from ESON manifest closure');
+  }
+  var eshttpCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  }).trim();
+  if (!/^[0-9a-f]{40}$/i.test(eshttpCommit)) {
+    throw new Error('[eshttp-build] could not resolve exact ESHTTP Git commit provenance');
+  }
+
   var esb64 = buildLibrary('esb64', esb64Package.version, 'ESB64', esb64Facade,
     [{ name: 'atob', type: 'function' }, { name: 'btoa', type: 'function' },
       { name: 'utf8Decode', type: 'function' }, { name: 'utf8Encode', type: 'function' }], [],
-    { package: 'esb64', repository: 'https://github.com/thelabcorner/es-b64.git', artifact: 'dist/ESB64.facade.jsx' });
+    dependencyProvenance('esb64'));
   var eson = buildLibrary('eson', esonPackage.version, 'ESON', esonFacade,
     [{ name: 'parse', type: 'function' }, { name: 'stringify', type: 'function' }],
     [{ id: 'esb64', range: '^' + esb64Package.version }],
-    { package: 'eson', repository: 'https://github.com/thelabcorner/eson.git', artifact: 'dist/ESON.facade.jsx' });
+    dependencyProvenance('eson'));
   // The stand-alone facade carries fallback sibling bundles as string literals
   // for non-composed use. Strip only those data literals from the composed
   // library; v2 dependencies provide the actual ESON/ESB64 facades.
@@ -430,7 +452,8 @@ function buildManifestV2Accel(arch, cliExe, ipcDll, banner) {
     [{ name: 'request', type: 'function' }, { name: 'get', type: 'function' },
       { name: 'json', type: 'function' }, { name: 'configure', type: 'function' }],
     [{ id: 'eson', range: '^' + esonPackage.version }],
-    { package: 'eshttp', repository: 'https://github.com/thelabcorner/es-http.git', artifact: 'dist/.eshttp-v2-facade.jsx' });
+    { package: 'eshttp', repository: 'https://github.com/thelabcorner/es-http.git',
+      commit: eshttpCommit, artifact: 'dist/.eshttp-v2-facade.jsx' });
 
   // ESPACK's native build helper determines kind=file/dll and binds exact binary
   // bytes. The temporary manifest only contributes payload and shared accel data.
@@ -438,7 +461,6 @@ function buildManifestV2Accel(arch, cliExe, ipcDll, banner) {
   espackBuildManifest({ embeds: [cliExe, ipcDll], out: scratchBundle, name: 'eshttp',
     accel: ESB64_NATIVE_DLL, accelVersion: ESB64_ACCEL_VERSION, manifestOut: payloadManifest, quiet: true });
   var payloads = JSON.parse(readFileSync(payloadManifest, 'utf8')).payloads;
-  var esonManifest = JSON.parse(readFileSync(esonManifestPath, 'utf8'));
   var pinnedAccel = accelFromCurrentDll();
   if (!accelMatches(esonManifest.accel, pinnedAccel)) {
     throw new Error('[eshttp-build] ESON manifest accelerator differs from the pinned ESB64Native build');
