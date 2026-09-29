@@ -11,7 +11,7 @@
 [![Live: Wikipedia W fetch](https://img.shields.io/badge/live-Wikipedia%20W%20fetch%20PASS-green)](#validation)
 [![Adobe: Creative Suite](https://img.shields.io/badge/Adobe%20-Creative%20Suite-red?logo=adobe&logoColor=white)](https://extendscript.docsforadobe.dev/)
 [![Engine](https://img.shields.io/badge/ExtendScript-ES3-green)](#compatibility)
-[![Size](https://img.shields.io/badge/runtime-339%20KB-orange)](#which-build-should-i-use)
+[![Size](https://img.shields.io/badge/runtime-337.9%20KB-orange)](#which-build-should-i-use)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL%203.0--or--later-blue)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 </div>

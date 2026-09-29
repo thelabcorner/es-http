@@ -24,7 +24,7 @@
 - ESTC static/live parse: all standalone, native accelerator, x64/x86 v2 root, and jsxinc surfaces pass on Adobe Illustrator 30.6.0 / ExtendScript 4.5.6.
 - Cold manifest-v2 proof: **PASS**; evaluating only the x64 root activates `ESB64 -> ESON -> ESHTTP`, preserves borrowed ESON native ownership, and deduplicates repeated evaluation.
 - Existing live localhost contract: **10/10 checks passed**, including the **46-check** in-engine self-test and a real 200 response through the CLI transport.
-- Final composed UTF-8 sizes: x64 **628,222 B**; x86 **574,306 B**.
+- Final composed UTF-8 sizes: x64 **628,228 B**; x86 **574,312 B**.
 
 ## Release assets
 
